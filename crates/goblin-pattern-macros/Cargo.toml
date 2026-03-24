@@ -1,0 +1,10 @@
+[package]
+name = "goblin-lite-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Proc-macros for goblin-lite"
+
+[lib]
+proc-macro = true
