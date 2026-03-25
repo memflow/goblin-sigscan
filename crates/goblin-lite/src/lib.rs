@@ -7,3 +7,4 @@ pub mod mach;
 pub mod pattern;
 pub mod pe64;
 mod scan;
+pub use scan::{BinaryView, Offset};
