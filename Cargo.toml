@@ -12,3 +12,4 @@ description = "Goblin-powered PE pattern scanning with pelite-style signatures"
 [workspace.dependencies]
 goblin = "0.10"
 thiserror = "2"
+proc-macro-crate = "3"

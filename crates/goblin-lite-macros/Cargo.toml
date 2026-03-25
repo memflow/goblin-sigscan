@@ -8,3 +8,7 @@ description = "Proc-macros for goblin-lite"
 
 [lib]
 proc-macro = true
+
+[dependencies]
+goblin-lite-pattern = { path = "../goblin-lite-pattern" }
+proc-macro-crate = { workspace = true }

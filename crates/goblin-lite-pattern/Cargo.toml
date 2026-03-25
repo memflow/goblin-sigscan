@@ -1,0 +1,7 @@
+[package]
+name = "goblin-lite-pattern"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared pattern parser for goblin-lite"

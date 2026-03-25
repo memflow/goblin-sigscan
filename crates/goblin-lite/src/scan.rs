@@ -206,3 +206,80 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Range;
+
+    use super::{BinaryView, Offset, Scanner};
+    use crate::pattern::Atom;
+
+    #[derive(Debug)]
+    struct TestView {
+        bytes: Vec<u8>,
+        ranges: Vec<Range<Offset>>,
+    }
+
+    impl TestView {
+        fn new(bytes: &[u8]) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+                ranges: vec![0..bytes.len() as Offset],
+            }
+        }
+    }
+
+    impl BinaryView for TestView {
+        fn code_ranges(&self) -> &[Range<Offset>] {
+            &self.ranges
+        }
+
+        fn read_u8(&self, offset: Offset) -> Option<u8> {
+            usize::try_from(offset)
+                .ok()
+                .and_then(|index| self.bytes.get(index).copied())
+        }
+
+        fn read_i32(&self, _offset: Offset) -> Option<i32> {
+            None
+        }
+
+        fn read_u32(&self, _offset: Offset) -> Option<u32> {
+            None
+        }
+    }
+
+    #[test]
+    fn skip_range_tries_shorter_distances_first() {
+        let view = TestView::new(&[0x00, 0x41, 0x41]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::SkipRange(0, 2),
+            Atom::Save(1),
+            Atom::Byte(0x41),
+        ];
+        let mut matches = scanner.matches_code(&pat);
+        let mut save = [0u64; 2];
+
+        assert!(matches.next(&mut save));
+        assert_eq!(save[1], 1);
+    }
+
+    #[test]
+    fn skip_range_backtracks_to_later_distances() {
+        let view = TestView::new(&[0x00, 0x00, 0x41]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::SkipRange(0, 2),
+            Atom::Save(1),
+            Atom::Byte(0x41),
+        ];
+        let mut matches = scanner.matches_code(&pat);
+        let mut save = [0u64; 2];
+
+        assert!(matches.next(&mut save));
+        assert_eq!(save[1], 2);
+    }
+}
