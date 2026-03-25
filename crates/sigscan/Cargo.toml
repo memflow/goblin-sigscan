@@ -1,0 +1,11 @@
+[package]
+name = "sigscan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Small CLI to scan binaries with pelite-style signatures"
+
+[dependencies]
+goblin = { workspace = true }
+goblin-lite = { path = "../goblin-lite" }
