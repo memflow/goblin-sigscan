@@ -9,4 +9,4 @@ description.workspace = true
 [dependencies]
 goblin = { workspace = true }
 thiserror = { workspace = true }
-goblin-lite-macros = { path = "../goblin-pattern-macros" }
+goblin-lite-macros = { path = "../goblin-lite-macros" }
