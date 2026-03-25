@@ -8,11 +8,6 @@ use thiserror::Error;
 
 use crate::scan::{BinaryView, Offset, Scanner};
 
-/// Relative virtual address.
-pub type Rva = u32;
-/// Virtual address.
-pub type Va = u64;
-
 /// Error type returned by PE wrapper APIs.
 #[derive(Debug, Error)]
 pub enum PeError {
@@ -66,24 +61,10 @@ impl<'a> PeFile<'a> {
         Scanner::new(self)
     }
 
-    /// Converts RVA to VA.
-    pub fn rva_to_va(&self, rva: Rva) -> Option<Va> {
-        if rva == 0 {
-            return None;
-        }
-        Some(self.pe.image_base.wrapping_add(u64::from(rva)))
-    }
-
-    /// Converts VA to RVA.
-    pub fn va_to_rva(&self, va: Va) -> Option<Rva> {
-        if va == 0 {
-            return None;
-        }
-        let delta = va.checked_sub(self.pe.image_base)?;
-        u32::try_from(delta).ok()
-    }
-
     /// Reads a NUL-terminated C string at a module-relative offset.
+    #[deprecated(
+        note = "used only by parity-client-smoke; this helper may be removed in a future release"
+    )]
     pub fn derva_c_str(&self, offset: Offset) -> Option<&'a CStr> {
         let start = self.rva_to_file_offset(offset)?;
         let tail = self.bytes.get(start..)?;

@@ -68,6 +68,9 @@ impl<'a> ElfFile<'a> {
         Scanner::new(self)
     }
 
+    #[deprecated(
+        note = "used only by parity-client-smoke; this helper may be removed in a future release"
+    )]
     pub fn derva_c_str(&self, offset: Offset) -> Option<&'a CStr> {
         let start = self.offset_to_file_offset(offset)?;
         let tail = self.bytes.get(start..)?;
