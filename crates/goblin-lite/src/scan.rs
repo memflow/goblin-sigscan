@@ -3,7 +3,9 @@ use std::ops::Range;
 use crate::pattern::Atom;
 
 pub type Offset = u64;
+const MAX_BACKTRACK_STATES: usize = 1_000_000;
 
+/// Read-only view over a mapped binary image for scanner execution.
 pub trait BinaryView {
     fn code_ranges(&self) -> &[Range<Offset>];
     fn read_u8(&self, offset: Offset) -> Option<u8>;
@@ -12,15 +14,18 @@ pub trait BinaryView {
 }
 
 #[derive(Copy, Clone, Debug)]
+/// Pattern scanner over a [`BinaryView`].
 pub struct Scanner<'a, B: BinaryView> {
     view: &'a B,
 }
 
 impl<'a, B: BinaryView> Scanner<'a, B> {
+    /// Creates a scanner for a binary view.
     pub fn new(view: &'a B) -> Self {
         Self { view }
     }
 
+    /// Returns `true` only when the pattern has exactly one code match.
     pub fn finds_code(&self, pat: &[Atom], save: &mut [Offset]) -> bool {
         let mut matches = self.matches_code(pat);
         if !matches.next(save) {
@@ -29,6 +34,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         !matches.next(&mut [])
     }
 
+    /// Returns an iterator-like matcher for all code-range matches.
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
         Matches {
             scanner: Scanner { view: self.view },
@@ -102,6 +108,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                                 let mut alt = state.clone();
                                 alt.cursor = next_cursor;
                                 alt.pc += 1;
+                                if stack.len() >= MAX_BACKTRACK_STATES {
+                                    debug_assert!(
+                                        false,
+                                        "scanner backtracking stack must stay below MAX_BACKTRACK_STATES for bounded memory"
+                                    );
+                                    return false;
+                                }
                                 stack.push(alt);
                             }
                         }
@@ -161,12 +174,29 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     }
                     Atom::Case(skip) => {
                         let mut alt = state.clone();
-                        alt.pc = alt.pc.saturating_add(usize::from(skip));
+                        let Some(next_pc) = alt.pc.checked_add(usize::from(skip)) else {
+                            break;
+                        };
+                        alt.pc = next_pc;
+                        if stack.len() >= MAX_BACKTRACK_STATES {
+                            debug_assert!(
+                                false,
+                                "scanner backtracking stack must stay below MAX_BACKTRACK_STATES for bounded memory"
+                            );
+                            return false;
+                        }
                         stack.push(alt);
                         state.pc += 1;
                     }
                     Atom::Break(skip) => {
-                        state.pc = state.pc.saturating_add(usize::from(skip) + 1);
+                        let Some(next_pc) = state
+                            .pc
+                            .checked_add(usize::from(skip))
+                            .and_then(|value| value.checked_add(1))
+                        else {
+                            break;
+                        };
+                        state.pc = next_pc;
                     }
                 }
             }
@@ -177,6 +207,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 }
 
 #[derive(Clone, Debug)]
+/// Stateful matcher produced by [`Scanner::matches_code`].
 pub struct Matches<'a, 'p, B: BinaryView> {
     scanner: Scanner<'a, B>,
     pat: &'p [Atom],
@@ -185,6 +216,7 @@ pub struct Matches<'a, 'p, B: BinaryView> {
 }
 
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
+    /// Advances to the next match and writes save-slot values into `save`.
     pub fn next(&mut self, save: &mut [Offset]) -> bool {
         while let Some(range) = self.scanner.view.code_ranges().get(self.range_index) {
             let mut cursor = self.cursor.unwrap_or(range.start);
@@ -222,9 +254,10 @@ mod tests {
 
     impl TestView {
         fn new(bytes: &[u8]) -> Self {
+            let end = bytes.len() as Offset;
             Self {
                 bytes: bytes.to_vec(),
-                ranges: vec![0..bytes.len() as Offset],
+                ranges: std::iter::once(0..end).collect(),
             }
         }
     }

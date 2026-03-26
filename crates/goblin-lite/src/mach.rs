@@ -5,16 +5,21 @@ use thiserror::Error;
 
 use crate::scan::{BinaryView, Offset, Scanner};
 
+/// Error type returned by Mach-O wrapper APIs.
 #[derive(Debug, Error)]
 pub enum MachError {
     #[error("failed to parse Mach-O: {0}")]
     Parse(#[from] goblin::error::Error),
     #[error("fat Mach-O had no parseable binary architecture")]
     NoBinaryArch,
+    #[error("Mach-O segment range overflows virtual address space")]
+    InvalidLoadRange { vmaddr: Offset, filesize: Offset },
 }
 
+/// Result alias for Mach-O wrapper APIs.
 pub type Result<T> = std::result::Result<T, MachError>;
 
+/// Minimal Mach-O wrapper exposing pelite-like scanner behavior.
 #[derive(Debug)]
 pub struct MachFile<'a> {
     bytes: &'a [u8],
@@ -30,6 +35,14 @@ struct LoadRange {
 }
 
 impl<'a> MachFile<'a> {
+    /// Parses a Mach-O image from bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    /// let mut matches = file.scanner().matches_code(pattern);
+    /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let mach = Mach::parse(bytes)?;
 
@@ -38,14 +51,14 @@ impl<'a> MachFile<'a> {
 
         match mach {
             Mach::Binary(binary) => {
-                collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges);
+                collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges)?;
             }
             Mach::Fat(fat) => {
                 let mut found = false;
                 for index in 0..fat.narches {
                     let arch = fat.get(index)?;
                     if let SingleArch::MachO(binary) = arch {
-                        collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges);
+                        collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges)?;
                         found = true;
                         break;
                     }
@@ -63,6 +76,7 @@ impl<'a> MachFile<'a> {
         })
     }
 
+    /// Returns scanner access.
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
     }
@@ -120,12 +134,19 @@ fn collect_ranges<'a, I>(
     segments: I,
     code_ranges: &mut Vec<Range<Offset>>,
     load_ranges: &mut Vec<LoadRange>,
-) where
+) -> Result<()>
+where
     I: Iterator<Item = &'a goblin::mach::segment::Segment<'a>>,
 {
     for segment in segments {
         let virt_start = segment.vmaddr;
-        let virt_end = virt_start.saturating_add(segment.filesize);
+        let virt_end =
+            virt_start
+                .checked_add(segment.filesize)
+                .ok_or(MachError::InvalidLoadRange {
+                    vmaddr: virt_start,
+                    filesize: segment.filesize,
+                })?;
         load_ranges.push(LoadRange {
             virt_start,
             virt_end,
@@ -136,4 +157,6 @@ fn collect_ranges<'a, I>(
             code_ranges.push(virt_start..virt_end);
         }
     }
+
+    Ok(())
 }

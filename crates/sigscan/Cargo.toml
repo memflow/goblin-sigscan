@@ -9,3 +9,4 @@ description = "Small CLI to scan binaries with pelite-style signatures"
 [dependencies]
 goblin = { workspace = true }
 goblin-lite = { path = "../goblin-lite" }
+thiserror = { workspace = true }

@@ -1,5 +1,9 @@
 use std::fmt;
 
+const MAX_PATTERN_SOURCE_BYTES: usize = 16 * 1024;
+const MAX_PATTERN_ATOMS: usize = u16::MAX as usize;
+const MAX_GROUP_ALTERNATIVES: usize = 1024;
+
 /// Pattern parser error.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ParsePatError {
@@ -43,6 +47,8 @@ pub enum PatError {
     GroupOperand,
     StackError,
     StackInvalid,
+    PatternTooLong,
+    PatternTooComplex,
 }
 
 impl PatError {
@@ -56,6 +62,8 @@ impl PatError {
             PatError::GroupOperand => "group operand error",
             PatError::StackError => "stack unbalanced",
             PatError::StackInvalid => "stack must follow jump",
+            PatError::PatternTooLong => "pattern input too long",
+            PatError::PatternTooComplex => "pattern expands beyond supported complexity limits",
         }
     }
 }
@@ -101,10 +109,24 @@ pub fn save_len(pat: &[Atom]) -> usize {
 
 /// Parses a pelite-style signature string into atoms.
 pub fn parse(pat: &str) -> Result<Pattern, ParsePatError> {
+    if pat.len() > MAX_PATTERN_SOURCE_BYTES {
+        return Err(ParsePatError {
+            kind: PatError::PatternTooLong,
+            position: MAX_PATTERN_SOURCE_BYTES,
+        });
+    }
+
     let mut parser = Parser::new(pat);
     let mut result = Vec::with_capacity(pat.len() / 2);
     result.push(Atom::Save(0));
     result.append(&mut parser.parse_sequence(&[])?);
+
+    if result.len() > MAX_PATTERN_ATOMS {
+        return Err(ParsePatError {
+            kind: PatError::PatternTooComplex,
+            position: pat.len(),
+        });
+    }
 
     while matches!(result.last(), Some(Atom::Skip(_))) {
         result.pop();
@@ -170,7 +192,13 @@ impl<'a> Parser<'a> {
                 }
                 '$' => result.push(Atom::Jump4),
                 '{' => {
-                    self.depth = self.depth.saturating_add(1);
+                    if self.depth == u16::MAX {
+                        return Err(ParsePatError {
+                            kind: PatError::StackError,
+                            position,
+                        });
+                    }
+                    self.depth += 1;
                     let Some(last) = result.last_mut() else {
                         return Err(ParsePatError {
                             kind: PatError::StackInvalid,
@@ -223,7 +251,7 @@ impl<'a> Parser<'a> {
                 }
                 '(' => {
                     let alts = self.parse_group(position)?;
-                    result.append(&mut compile_alternatives(alts));
+                    result.append(&mut compile_alternatives(alts, position)?);
                 }
                 _ if ch.is_ascii_hexdigit() => {
                     let (next_position, lo_ch) = self.bump().ok_or(ParsePatError {
@@ -247,6 +275,13 @@ impl<'a> Parser<'a> {
                     });
                 }
             }
+
+            if result.len() > MAX_PATTERN_ATOMS {
+                return Err(ParsePatError {
+                    kind: PatError::PatternTooComplex,
+                    position,
+                });
+            }
         }
 
         Ok(result)
@@ -263,6 +298,12 @@ impl<'a> Parser<'a> {
             let seq = self.parse_sequence(&['|', ')'])?;
             max_save = max_save.max(self.save);
             alternatives.push(seq);
+            if alternatives.len() > MAX_GROUP_ALTERNATIVES {
+                return Err(ParsePatError {
+                    kind: PatError::PatternTooComplex,
+                    position,
+                });
+            }
 
             let Some((stop_pos, stop)) = self.bump() else {
                 return Err(ParsePatError {
@@ -394,23 +435,41 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn compile_alternatives(mut alts: Vec<Vec<Atom>>) -> Vec<Atom> {
+fn compile_alternatives(
+    mut alts: Vec<Vec<Atom>>,
+    position: usize,
+) -> Result<Vec<Atom>, ParsePatError> {
     debug_assert!(!alts.is_empty(), "alternatives parser guarantees non-empty");
     if alts.len() == 1 {
-        return alts.pop().unwrap_or_default();
+        let only = alts
+            .pop()
+            .expect("alternatives parser guarantees exactly one arm remains");
+        return Ok(only);
     }
 
     let first = alts.remove(0);
-    let rest = compile_alternatives(alts);
-    let case_skip = u16::try_from(first.len() + 2).unwrap_or(u16::MAX);
-    let break_skip = u16::try_from(rest.len()).unwrap_or(u16::MAX);
+    let rest = compile_alternatives(alts, position)?;
+    let case_skip = u16::try_from(first.len() + 2).map_err(|_| ParsePatError {
+        kind: PatError::PatternTooComplex,
+        position,
+    })?;
+    let break_skip = u16::try_from(rest.len()).map_err(|_| ParsePatError {
+        kind: PatError::PatternTooComplex,
+        position,
+    })?;
 
     let mut out = Vec::with_capacity(2 + first.len() + rest.len());
     out.push(Atom::Case(case_skip));
     out.extend(first);
     out.push(Atom::Break(break_skip));
     out.extend(rest);
-    out
+    if out.len() > MAX_PATTERN_ATOMS {
+        return Err(ParsePatError {
+            kind: PatError::PatternTooComplex,
+            position,
+        });
+    }
+    Ok(out)
 }
 
 fn hex_value(ch: char) -> Option<u8> {

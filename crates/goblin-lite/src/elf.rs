@@ -8,14 +8,19 @@ use thiserror::Error;
 
 use crate::scan::{BinaryView, Offset, Scanner};
 
+/// Error type returned by ELF wrapper APIs.
 #[derive(Debug, Error)]
 pub enum ElfError {
     #[error("failed to parse ELF: {0}")]
     Parse(#[from] goblin::error::Error),
+    #[error("ELF load segment range overflows virtual address space")]
+    InvalidLoadRange { vaddr: Offset, filesz: Offset },
 }
 
+/// Result alias for ELF wrapper APIs.
 pub type Result<T> = std::result::Result<T, ElfError>;
 
+/// Minimal ELF wrapper exposing pelite-like scanner behavior.
 #[derive(Debug)]
 pub struct ElfFile<'a> {
     bytes: &'a [u8],
@@ -32,6 +37,14 @@ struct LoadRange {
 }
 
 impl<'a> ElfFile<'a> {
+    /// Parses an ELF image from bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    /// let mut matches = file.scanner().matches_code(pattern);
+    /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let elf = Elf::parse(bytes)?;
 
@@ -44,7 +57,13 @@ impl<'a> ElfFile<'a> {
             }
 
             let virt_start = ph.p_vaddr;
-            let virt_end = virt_start.saturating_add(ph.p_filesz);
+            let virt_end =
+                virt_start
+                    .checked_add(ph.p_filesz)
+                    .ok_or(ElfError::InvalidLoadRange {
+                        vaddr: virt_start,
+                        filesz: ph.p_filesz,
+                    })?;
             load_ranges.push(LoadRange {
                 virt_start,
                 virt_end,
@@ -64,6 +83,7 @@ impl<'a> ElfFile<'a> {
         })
     }
 
+    /// Returns scanner access.
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
     }
