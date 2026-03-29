@@ -1,4 +1,4 @@
-use std::{ffi::CStr, ops::Range};
+use std::ops::Range;
 
 use goblin::pe::{
     PE,
@@ -61,15 +61,62 @@ impl<'a> PeFile<'a> {
         Scanner::new(self)
     }
 
-    /// Reads a NUL-terminated C string at a module-relative offset.
-    #[deprecated(
-        note = "used only by parity-client-smoke; this helper may be removed in a future release"
-    )]
-    pub fn derva_c_str(&self, offset: Offset) -> Option<&'a CStr> {
-        let start = self.rva_to_file_offset(offset)?;
-        let tail = self.bytes.get(start..)?;
+    /// Returns the raw file bytes.
+    pub fn image(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Returns the image base virtual address from the optional header.
+    pub fn image_base(&self) -> u64 {
+        self.pe.image_base as u64
+    }
+
+    /// Converts a virtual address to an image-relative offset (RVA).
+    /// Returns `None` if the VA does not fall within the image.
+    pub fn va_to_rva(&self, va: u64) -> Option<Offset> {
+        let rva = va.checked_sub(self.image_base())?;
+        // Verify the RVA maps to a valid file location.
+        let _ = self.rva_to_file_offset(rva)?;
+        Some(rva)
+    }
+
+    /// Converts a file offset to an RVA.
+    /// Returns `None` if the offset does not fall within any section or the header.
+    pub fn file_offset_to_rva(&self, file_offset: usize) -> Option<Offset> {
+        let headers_end = self
+            .pe
+            .header
+            .optional_header
+            .as_ref()
+            .map(|oh| oh.windows_fields.size_of_headers as usize)
+            .unwrap_or(0);
+        if file_offset < headers_end {
+            return Some(file_offset as Offset);
+        }
+        for section in &self.pe.sections {
+            let raw_start = section.pointer_to_raw_data as usize;
+            let raw_size = section.size_of_raw_data as usize;
+            if file_offset >= raw_start && file_offset < raw_start.saturating_add(raw_size) {
+                let delta = file_offset - raw_start;
+                return Some(section.virtual_address as Offset + delta as Offset);
+            }
+        }
+        None
+    }
+
+    /// Reads a little-endian `u64` at the given RVA.
+    pub fn read_u64(&self, rva: Offset) -> Option<u64> {
+        let file_offset = self.rva_to_file_offset(rva)?;
+        let bytes = self.bytes.get(file_offset..file_offset.checked_add(8)?)?;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    /// Reads a NUL-terminated UTF-8 string at the given RVA.
+    pub fn read_c_str(&self, rva: Offset) -> Option<&'a str> {
+        let file_offset = self.rva_to_file_offset(rva)?;
+        let tail = self.bytes.get(file_offset..)?;
         let nul_pos = tail.iter().position(|b| *b == 0)?;
-        CStr::from_bytes_with_nul(tail.get(..=nul_pos)?).ok()
+        std::str::from_utf8(tail.get(..nul_pos)?).ok()
     }
 
     fn rva_to_file_offset(&self, rva: Offset) -> Option<usize> {
