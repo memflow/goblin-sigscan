@@ -3,6 +3,15 @@ use std::ffi::CStr;
 use crate::scan::Offset;
 
 /// Primitive type that can be decoded from little-endian bytes.
+///
+/// # Examples
+///
+/// ```
+/// use goblin_lite::FromLeBytes;
+///
+/// let value = u32::from_le_slice(&[0x78, 0x56, 0x34, 0x12]);
+/// assert_eq!(value, 0x1234_5678);
+/// ```
 pub trait FromLeBytes: Sized {
     const SIZE: usize;
 
@@ -38,6 +47,31 @@ impl_from_le_bytes!(u64, 8);
 impl_from_le_bytes!(i64, 8);
 
 /// Shared mapped-address helpers used by PE/ELF/Mach wrappers.
+///
+/// This trait operates on module-relative mapped offsets (RVA/virtual address/VM address,
+/// depending on the concrete format wrapper).
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::error::Error;
+///
+/// use goblin_lite::{MappedAddressView, pe64::PeFile};
+///
+/// fn main() -> Result<(), Box<dyn Error>> {
+///     let bytes = include_bytes!(concat!(
+///         env!("CARGO_MANIFEST_DIR"),
+///         "/fixtures/memflow_coredump.x86_64.dll"
+///     ));
+///     let file = PeFile::from_bytes(bytes)?;
+///     let Some(rva) = file.file_offset_to_mapped(0x1000) else {
+///         return Ok(());
+///     };
+///     let _value = file.read_le::<u32>(rva);
+///     let _name = file.mapped_c_str(rva).and_then(|value| value.to_str().ok());
+///     Ok(())
+/// }
+/// ```
 pub trait MappedAddressView {
     /// Returns the underlying binary image bytes.
     fn image(&self) -> &[u8];

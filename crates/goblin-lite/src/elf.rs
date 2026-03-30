@@ -1,8 +1,8 @@
 use std::{ffi::CStr, ops::Range};
 
 use goblin::elf::{
-    Elf,
     program_header::{PF_X, PT_LOAD},
+    Elf,
 };
 use thiserror::Error;
 
@@ -44,9 +44,21 @@ impl<'a> ElfFile<'a> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
-    /// let mut matches = file.scanner().matches_code(pattern);
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let elf = Elf::parse(bytes)?;
@@ -87,21 +99,77 @@ impl<'a> ElfFile<'a> {
     }
 
     /// Returns scanner access.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
     }
 
     /// Returns the original image bytes.
+    #[inline]
     pub fn image(&self) -> &'a [u8] {
         self.bytes
     }
 
     /// Converts a virtual address into a file offset.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _file_offset = file.vaddr_to_file_offset(vaddr);
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn vaddr_to_file_offset(&self, vaddr: Offset) -> Option<usize> {
         self.offset_to_file_offset(vaddr)
     }
 
     /// Converts a file offset into a virtual address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let _vaddr = file.file_offset_to_vaddr(0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn file_offset_to_vaddr(&self, file_offset: usize) -> Option<Offset> {
         self.load_ranges.iter().find_map(|range| {
             let file_start = usize::try_from(range.file_start).ok()?;
@@ -116,16 +184,57 @@ impl<'a> ElfFile<'a> {
     }
 
     /// Reads a copied little-endian value from a virtual address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _value = file.read_vaddr::<u32>(vaddr);
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn read_vaddr<T: FromLeBytes>(&self, vaddr: Offset) -> Option<T> {
         self.read_le(vaddr)
     }
 
     /// Reads a NUL-terminated C string at a virtual address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _name = file.dvaddr_c_str(vaddr).and_then(|value| value.to_str().ok());
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn dvaddr_c_str(&self, vaddr: Offset) -> Option<&CStr> {
         self.mapped_c_str(vaddr)
     }
 
     /// Backward-compatible alias for existing call sites.
+    #[inline]
     pub fn derva_c_str(&self, offset: Offset) -> Option<&CStr> {
         self.dvaddr_c_str(offset)
     }
@@ -143,14 +252,17 @@ impl<'a> ElfFile<'a> {
 }
 
 impl MappedAddressView for ElfFile<'_> {
+    #[inline]
     fn image(&self) -> &[u8] {
         self.bytes
     }
 
+    #[inline]
     fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
         self.vaddr_to_file_offset(mapped_offset)
     }
 
+    #[inline]
     fn file_offset_to_mapped(&self, file_offset: usize) -> Option<Offset> {
         self.file_offset_to_vaddr(file_offset)
     }

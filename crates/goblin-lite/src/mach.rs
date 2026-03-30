@@ -1,6 +1,6 @@
 use std::{ffi::CStr, ops::Range};
 
-use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
+use goblin::mach::{constants::VM_PROT_EXECUTE, Mach, SingleArch};
 use thiserror::Error;
 
 use crate::{
@@ -42,9 +42,21 @@ impl<'a> MachFile<'a> {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
-    /// let mut matches = file.scanner().matches_code(pattern);
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
     /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let mach = Mach::parse(bytes)?;
@@ -80,21 +92,77 @@ impl<'a> MachFile<'a> {
     }
 
     /// Returns scanner access.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
     }
 
     /// Returns the original image bytes.
+    #[inline]
     pub fn image(&self) -> &'a [u8] {
         self.bytes
     }
 
     /// Converts a VM address into a file offset.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _file_offset = file.vmaddr_to_file_offset(vmaddr);
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn vmaddr_to_file_offset(&self, vmaddr: Offset) -> Option<usize> {
         self.offset_to_file_offset(vmaddr)
     }
 
     /// Converts a file offset into a VM address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let _vmaddr = file.file_offset_to_vmaddr(0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn file_offset_to_vmaddr(&self, file_offset: usize) -> Option<Offset> {
         self.load_ranges.iter().find_map(|range| {
             let file_start = usize::try_from(range.file_start).ok()?;
@@ -109,16 +177,57 @@ impl<'a> MachFile<'a> {
     }
 
     /// Reads a copied little-endian value from a VM address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _value = file.read_vmaddr::<u32>(vmaddr);
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn read_vmaddr<T: FromLeBytes>(&self, vmaddr: Offset) -> Option<T> {
         self.read_le(vmaddr)
     }
 
     /// Reads a NUL-terminated C string at a VM address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _name = file.dvmaddr_c_str(vmaddr).and_then(|value| value.to_str().ok());
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn dvmaddr_c_str(&self, vmaddr: Offset) -> Option<&CStr> {
         self.mapped_c_str(vmaddr)
     }
 
     /// Backward-compatible alias for existing call sites.
+    #[inline]
     pub fn derva_c_str(&self, offset: Offset) -> Option<&CStr> {
         self.dvmaddr_c_str(offset)
     }
@@ -136,14 +245,17 @@ impl<'a> MachFile<'a> {
 }
 
 impl MappedAddressView for MachFile<'_> {
+    #[inline]
     fn image(&self) -> &[u8] {
         self.bytes
     }
 
+    #[inline]
     fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
         self.vmaddr_to_file_offset(mapped_offset)
     }
 
+    #[inline]
     fn file_offset_to_mapped(&self, file_offset: usize) -> Option<Offset> {
         self.file_offset_to_vmaddr(file_offset)
     }

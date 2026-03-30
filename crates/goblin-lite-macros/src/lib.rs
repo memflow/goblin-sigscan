@@ -1,13 +1,13 @@
 use goblin_lite_pattern::Atom;
 use proc_macro::{Delimiter, Literal, TokenStream, TokenTree};
-use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro_crate::{crate_name, FoundCrate};
 
 /// Compile-time pattern parser.
 ///
-/// ```ignore
-/// use goblin_lite::pattern as pat;
+/// ```no_run
+/// use goblin_lite_macros::pattern;
 ///
-/// let pattern = pat!("488915${'} 488942");
+/// let _macro_name = stringify!(pattern);
 /// ```
 #[proc_macro]
 pub fn pattern(input: TokenStream) -> TokenStream {

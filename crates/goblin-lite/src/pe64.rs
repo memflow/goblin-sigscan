@@ -1,8 +1,8 @@
 use std::{ffi::CStr, ops::Range};
 
 use goblin::pe::{
-    PE,
     section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
+    PE,
 };
 use thiserror::Error;
 
@@ -33,6 +33,25 @@ pub struct PeFile<'a> {
 
 impl<'a> PeFile<'a> {
     /// Parses a PE64 image from bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let pe = PE::parse(bytes)?;
         if !pe.is_64 {
@@ -60,21 +79,77 @@ impl<'a> PeFile<'a> {
     }
 
     /// Returns scanner access.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let pattern = goblin_lite::pattern::parse("90")?;
+    ///     let mut matches = file.scanner().matches_code(&pattern);
+    ///     let mut save = [0u64; 4];
+    ///     let _ = matches.next(&mut save);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
     }
 
     /// Returns the original image bytes.
+    #[inline]
     pub fn image(&self) -> &'a [u8] {
         self.bytes
     }
 
     /// Reads a copied little-endian value from an RVA.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _value = file.read_rva::<u32>(rva);
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn read_rva<T: FromLeBytes>(&self, rva: Offset) -> Option<T> {
         self.read_le(rva)
     }
 
     /// Converts an RVA into a virtual address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let _va = file.rva_to_va(0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn rva_to_va(&self, rva: Offset) -> Option<Offset> {
         let image_base = self
             .pe
@@ -86,6 +161,25 @@ impl<'a> PeFile<'a> {
     }
 
     /// Converts a virtual address into an RVA.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let Some(base) = file.rva_to_va(0) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _rva = file.va_to_rva(base + 0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn va_to_rva(&self, va: Offset) -> Option<Offset> {
         let image_base = self
             .pe
@@ -97,13 +191,48 @@ impl<'a> PeFile<'a> {
         self.rva_to_file_offset(rva).map(|_| rva)
     }
 
-    /// Reads a NUL-terminated C string at a module-relative offset.
     /// Reads a NUL-terminated C string at an RVA.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
+    ///         return Ok(());
+    ///     };
+    ///     let _name = file.derva_c_str(rva).and_then(|value| value.to_str().ok());
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
     pub fn derva_c_str(&self, rva: Offset) -> Option<&CStr> {
         self.mapped_c_str(rva)
     }
 
     /// Converts an RVA into a file offset.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let _file_offset = file.rva_to_file_offset(0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn rva_to_file_offset(&self, rva: Offset) -> Option<usize> {
         let headers_end = self
             .pe
@@ -129,6 +258,22 @@ impl<'a> PeFile<'a> {
     }
 
     /// Converts a file offset into an RVA.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let _rva = file.file_offset_to_rva(0x1000);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn file_offset_to_rva(&self, file_offset: usize) -> Option<Offset> {
         let headers_end = self
             .pe
@@ -157,14 +302,17 @@ impl<'a> PeFile<'a> {
 }
 
 impl MappedAddressView for PeFile<'_> {
+    #[inline]
     fn image(&self) -> &[u8] {
         self.bytes
     }
 
+    #[inline]
     fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
         self.rva_to_file_offset(mapped_offset)
     }
 
+    #[inline]
     fn file_offset_to_mapped(&self, file_offset: usize) -> Option<Offset> {
         self.file_offset_to_rva(file_offset)
     }
