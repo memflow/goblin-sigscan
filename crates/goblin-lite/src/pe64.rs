@@ -6,7 +6,10 @@ use goblin::pe::{
 };
 use thiserror::Error;
 
-use crate::scan::{BinaryView, Offset, Scanner};
+use crate::{
+    address::{FromLeBytes, MappedAddressView},
+    scan::{BinaryView, Offset, Scanner},
+};
 
 /// Error type returned by PE wrapper APIs.
 #[derive(Debug, Error)]
@@ -61,18 +64,47 @@ impl<'a> PeFile<'a> {
         Scanner::new(self)
     }
 
-    /// Reads a NUL-terminated C string at a module-relative offset.
-    #[deprecated(
-        note = "used only by parity-client-smoke; this helper may be removed in a future release"
-    )]
-    pub fn derva_c_str(&self, offset: Offset) -> Option<&'a CStr> {
-        let start = self.rva_to_file_offset(offset)?;
-        let tail = self.bytes.get(start..)?;
-        let nul_pos = tail.iter().position(|b| *b == 0)?;
-        CStr::from_bytes_with_nul(tail.get(..=nul_pos)?).ok()
+    /// Returns the original image bytes.
+    pub fn image(&self) -> &'a [u8] {
+        self.bytes
     }
 
-    fn rva_to_file_offset(&self, rva: Offset) -> Option<usize> {
+    /// Reads a copied little-endian value from an RVA.
+    pub fn read_rva<T: FromLeBytes>(&self, rva: Offset) -> Option<T> {
+        self.read_le(rva)
+    }
+
+    /// Converts an RVA into a virtual address.
+    pub fn rva_to_va(&self, rva: Offset) -> Option<Offset> {
+        let image_base = self
+            .pe
+            .header
+            .optional_header
+            .as_ref()
+            .map(|header| header.windows_fields.image_base)?;
+        image_base.checked_add(rva)
+    }
+
+    /// Converts a virtual address into an RVA.
+    pub fn va_to_rva(&self, va: Offset) -> Option<Offset> {
+        let image_base = self
+            .pe
+            .header
+            .optional_header
+            .as_ref()
+            .map(|header| header.windows_fields.image_base)?;
+        let rva = va.checked_sub(image_base)?;
+        self.rva_to_file_offset(rva).map(|_| rva)
+    }
+
+    /// Reads a NUL-terminated C string at a module-relative offset.
+    /// Reads a NUL-terminated C string at an RVA.
+    pub fn derva_c_str(&self, rva: Offset) -> Option<&CStr> {
+        self.mapped_c_str(rva)
+    }
+
+    /// Converts an RVA into a file offset.
+    pub fn rva_to_file_offset(&self, rva: Offset) -> Option<usize> {
         let headers_end = self
             .pe
             .header
@@ -95,6 +127,47 @@ impl<'a> PeFile<'a> {
             raw_start.checked_add(delta_usize)
         })
     }
+
+    /// Converts a file offset into an RVA.
+    pub fn file_offset_to_rva(&self, file_offset: usize) -> Option<Offset> {
+        let headers_end = self
+            .pe
+            .header
+            .optional_header
+            .as_ref()
+            .map(|header| usize::try_from(header.windows_fields.size_of_headers).ok())
+            .flatten()
+            .unwrap_or(0);
+        if file_offset < headers_end {
+            return Offset::try_from(file_offset).ok();
+        }
+
+        self.pe.sections.iter().find_map(|section| {
+            let raw_start = usize::try_from(section.pointer_to_raw_data).ok()?;
+            let raw_size = usize::try_from(section.size_of_raw_data).ok()?;
+            let raw_end = raw_start.checked_add(raw_size)?;
+            if !(raw_start..raw_end).contains(&file_offset) {
+                return None;
+            }
+            let delta = file_offset.checked_sub(raw_start)?;
+            let section_rva = Offset::from(section.virtual_address);
+            section_rva.checked_add(Offset::try_from(delta).ok()?)
+        })
+    }
+}
+
+impl MappedAddressView for PeFile<'_> {
+    fn image(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
+        self.rva_to_file_offset(mapped_offset)
+    }
+
+    fn file_offset_to_mapped(&self, file_offset: usize) -> Option<Offset> {
+        self.file_offset_to_rva(file_offset)
+    }
 }
 
 impl BinaryView for PeFile<'_> {
@@ -108,18 +181,10 @@ impl BinaryView for PeFile<'_> {
     }
 
     fn read_i32(&self, offset: Offset) -> Option<i32> {
-        let file_offset = self.rva_to_file_offset(offset)?;
-        let bytes = self.bytes.get(file_offset..file_offset.checked_add(4)?)?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(bytes);
-        Some(i32::from_le_bytes(raw))
+        self.read_rva(offset)
     }
 
     fn read_u32(&self, offset: Offset) -> Option<u32> {
-        let file_offset = self.rva_to_file_offset(offset)?;
-        let bytes = self.bytes.get(file_offset..file_offset.checked_add(4)?)?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(bytes);
-        Some(u32::from_le_bytes(raw))
+        self.read_rva(offset)
     }
 }

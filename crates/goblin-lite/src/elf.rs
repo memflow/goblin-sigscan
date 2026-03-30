@@ -6,7 +6,10 @@ use goblin::elf::{
 };
 use thiserror::Error;
 
-use crate::scan::{BinaryView, Offset, Scanner};
+use crate::{
+    address::{FromLeBytes, MappedAddressView},
+    scan::{BinaryView, Offset, Scanner},
+};
 
 /// Error type returned by ELF wrapper APIs.
 #[derive(Debug, Error)]
@@ -88,14 +91,43 @@ impl<'a> ElfFile<'a> {
         Scanner::new(self)
     }
 
-    #[deprecated(
-        note = "used only by parity-client-smoke; this helper may be removed in a future release"
-    )]
-    pub fn derva_c_str(&self, offset: Offset) -> Option<&'a CStr> {
-        let start = self.offset_to_file_offset(offset)?;
-        let tail = self.bytes.get(start..)?;
-        let nul_pos = tail.iter().position(|b| *b == 0)?;
-        CStr::from_bytes_with_nul(tail.get(..=nul_pos)?).ok()
+    /// Returns the original image bytes.
+    pub fn image(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Converts a virtual address into a file offset.
+    pub fn vaddr_to_file_offset(&self, vaddr: Offset) -> Option<usize> {
+        self.offset_to_file_offset(vaddr)
+    }
+
+    /// Converts a file offset into a virtual address.
+    pub fn file_offset_to_vaddr(&self, file_offset: usize) -> Option<Offset> {
+        self.load_ranges.iter().find_map(|range| {
+            let file_start = usize::try_from(range.file_start).ok()?;
+            let file_size = usize::try_from(range.virt_end.checked_sub(range.virt_start)?).ok()?;
+            let file_end = file_start.checked_add(file_size)?;
+            if !(file_start..file_end).contains(&file_offset) {
+                return None;
+            }
+            let delta = file_offset.checked_sub(file_start)?;
+            range.virt_start.checked_add(Offset::try_from(delta).ok()?)
+        })
+    }
+
+    /// Reads a copied little-endian value from a virtual address.
+    pub fn read_vaddr<T: FromLeBytes>(&self, vaddr: Offset) -> Option<T> {
+        self.read_le(vaddr)
+    }
+
+    /// Reads a NUL-terminated C string at a virtual address.
+    pub fn dvaddr_c_str(&self, vaddr: Offset) -> Option<&CStr> {
+        self.mapped_c_str(vaddr)
+    }
+
+    /// Backward-compatible alias for existing call sites.
+    pub fn derva_c_str(&self, offset: Offset) -> Option<&CStr> {
+        self.dvaddr_c_str(offset)
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
@@ -110,6 +142,20 @@ impl<'a> ElfFile<'a> {
     }
 }
 
+impl MappedAddressView for ElfFile<'_> {
+    fn image(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
+        self.vaddr_to_file_offset(mapped_offset)
+    }
+
+    fn file_offset_to_mapped(&self, file_offset: usize) -> Option<Offset> {
+        self.file_offset_to_vaddr(file_offset)
+    }
+}
+
 impl BinaryView for ElfFile<'_> {
     fn code_ranges(&self) -> &[Range<Offset>] {
         &self.code_ranges
@@ -121,18 +167,10 @@ impl BinaryView for ElfFile<'_> {
     }
 
     fn read_i32(&self, offset: Offset) -> Option<i32> {
-        let file_offset = self.offset_to_file_offset(offset)?;
-        let bytes = self.bytes.get(file_offset..file_offset.checked_add(4)?)?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(bytes);
-        Some(i32::from_le_bytes(raw))
+        self.read_vaddr(offset)
     }
 
     fn read_u32(&self, offset: Offset) -> Option<u32> {
-        let file_offset = self.offset_to_file_offset(offset)?;
-        let bytes = self.bytes.get(file_offset..file_offset.checked_add(4)?)?;
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(bytes);
-        Some(u32::from_le_bytes(raw))
+        self.read_vaddr(offset)
     }
 }
