@@ -27,7 +27,7 @@ pub type Result<T> = std::result::Result<T, ElfError>;
 #[derive(Debug)]
 pub struct ElfFile<'a> {
     bytes: &'a [u8],
-    _elf: Elf<'a>,
+    elf: Elf<'a>,
     code_ranges: Vec<Range<Offset>>,
     load_ranges: Vec<LoadRange>,
 }
@@ -92,7 +92,7 @@ impl<'a> ElfFile<'a> {
 
         Ok(Self {
             bytes,
-            _elf: elf,
+            elf,
             code_ranges,
             load_ranges,
         })
@@ -120,6 +120,28 @@ impl<'a> ElfFile<'a> {
     /// ```
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
+    }
+
+    /// Returns the parsed underlying goblin ELF object.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_coredump.x86_64.so"
+    ///     ));
+    ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
+    ///     let _segments = file.elf().program_headers.len();
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
+    pub fn elf(&self) -> &Elf<'a> {
+        &self.elf
     }
 
     /// Returns the original image bytes.

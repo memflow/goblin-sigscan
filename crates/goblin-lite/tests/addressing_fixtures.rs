@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use goblin_lite::{MappedAddressView, elf::ElfFile, mach::MachFile, pe64::PeFile};
+use goblin_lite::{elf::ElfFile, mach::MachFile, pe64::PeFile, MappedAddressView};
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";
@@ -38,6 +38,7 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     let bytes = fixture_bytes(PE64_FIXTURE);
     let file = PeFile::from_bytes(&bytes).expect("PE64 fixture should parse as PE64");
 
+    assert!(!file.pe().sections.is_empty());
     assert_eq!(file.image(), bytes.as_slice());
 
     let rva = file
@@ -94,6 +95,7 @@ fn elf_addressing_helpers_roundtrip_and_read() {
     let bytes = fixture_bytes(ELF64_FIXTURE);
     let file = ElfFile::from_bytes(&bytes).expect("ELF fixture should parse");
 
+    assert!(!file.elf().program_headers.is_empty());
     assert_eq!(file.image(), bytes.as_slice());
 
     let vaddr = file
@@ -140,6 +142,10 @@ fn mach_addressing_helpers_roundtrip_and_read() {
     let bytes = fixture_bytes(MACH_FIXTURE);
     let file = MachFile::from_bytes(&bytes).expect("Mach-O fixture should parse");
 
+    assert!(matches!(
+        file.mach(),
+        goblin::mach::Mach::Binary(_) | goblin::mach::Mach::Fat(_)
+    ));
     assert_eq!(file.image(), bytes.as_slice());
 
     let vmaddr = file

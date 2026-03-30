@@ -26,6 +26,7 @@ pub type Result<T> = std::result::Result<T, MachError>;
 #[derive(Debug)]
 pub struct MachFile<'a> {
     bytes: &'a [u8],
+    mach: Mach<'a>,
     code_ranges: Vec<Range<Offset>>,
     load_ranges: Vec<LoadRange>,
 }
@@ -64,7 +65,7 @@ impl<'a> MachFile<'a> {
         let mut code_ranges = Vec::new();
         let mut load_ranges = Vec::new();
 
-        match mach {
+        match &mach {
             Mach::Binary(binary) => {
                 collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges)?;
             }
@@ -86,6 +87,7 @@ impl<'a> MachFile<'a> {
 
         Ok(Self {
             bytes,
+            mach,
             code_ranges,
             load_ranges,
         })
@@ -113,6 +115,28 @@ impl<'a> MachFile<'a> {
     /// ```
     pub fn scanner(&'a self) -> Scanner<'a, Self> {
         Scanner::new(self)
+    }
+
+    /// Returns the parsed underlying goblin Mach object.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/libmemflow_native.aarch64.dylib"
+    ///     ));
+    ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
+    ///     let _is_fat = matches!(file.mach(), goblin::mach::Mach::Fat(_));
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
+    pub fn mach(&self) -> &Mach<'a> {
+        &self.mach
     }
 
     /// Returns the original image bytes.

@@ -102,6 +102,28 @@ impl<'a> PeFile<'a> {
         Scanner::new(self)
     }
 
+    /// Returns the parsed underlying goblin PE object.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::error::Error;
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let bytes = include_bytes!(concat!(
+    ///         env!("CARGO_MANIFEST_DIR"),
+    ///         "/fixtures/memflow_coredump.x86_64.dll"
+    ///     ));
+    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
+    ///     let _sections = file.pe().sections.len();
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
+    pub fn pe(&self) -> &PE<'a> {
+        &self.pe
+    }
+
     /// Returns the original image bytes.
     #[inline]
     pub fn image(&self) -> &'a [u8] {
