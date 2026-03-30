@@ -13,3 +13,4 @@ description = "Goblin-powered PE pattern scanning with pelite-style signatures"
 goblin = "0.10"
 thiserror = "2"
 proc-macro-crate = "3"
+bytemuck = { version = "1", features = ["derive"] }

@@ -1,12 +1,13 @@
 use std::{ffi::CStr, ops::Range};
 
 use goblin::pe::{
-    section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
     PE,
+    section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
 };
 use thiserror::Error;
 
 use crate::{
+    Ptr,
     address::{FromLeBytes, MappedAddressView},
     scan::{BinaryView, Offset, Scanner},
 };
@@ -155,6 +156,24 @@ impl<'a> PeFile<'a> {
         self.read_le(rva)
     }
 
+    /// Builds a typed pointer from a 32-bit RVA.
+    #[inline]
+    pub fn ptr_from_rva32<T: ?Sized>(&self, rva: u32) -> Ptr<T> {
+        Ptr::from_mapped(Offset::from(rva))
+    }
+
+    /// Builds a typed pointer from an RVA.
+    #[inline]
+    pub fn ptr_from_rva64<T: ?Sized>(&self, rva: u64) -> Ptr<T> {
+        Ptr::from_mapped(rva)
+    }
+
+    /// Builds a typed pointer from a virtual address.
+    #[inline]
+    pub fn ptr_from_va64<T: ?Sized>(&self, va: u64) -> Option<Ptr<T>> {
+        self.va_to_rva(va).map(Ptr::from_mapped)
+    }
+
     /// Converts an RVA into a virtual address.
     ///
     /// # Examples
@@ -229,12 +248,12 @@ impl<'a> PeFile<'a> {
     ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _name = file.derva_c_str(rva).and_then(|value| value.to_str().ok());
+    ///     let _name = file.c_str_at_rva(rva).and_then(|value| value.to_str().ok());
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn derva_c_str(&self, rva: Offset) -> Option<&CStr> {
+    pub fn c_str_at_rva(&self, rva: Offset) -> Option<&CStr> {
         self.mapped_c_str(rva)
     }
 

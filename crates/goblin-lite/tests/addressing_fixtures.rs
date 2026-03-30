@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use goblin_lite::{elf::ElfFile, mach::MachFile, pe64::PeFile, MappedAddressView};
+use goblin_lite::{MappedAddressView, TypedView, elf::ElfFile, mach::MachFile, pe64::PeFile};
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";
@@ -58,7 +58,7 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .derva_c_str(rva)
+        .deref_c_str(file.ptr_from_rva64::<u8>(rva).cast())
         .expect("known mapped RVA should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
@@ -80,7 +80,10 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     assert_eq!(file.va_to_rva(va), Some(rva));
 
     assert!(file.read_rva::<u32>(u64::MAX).is_none());
-    assert!(file.derva_c_str(u64::MAX).is_none());
+    assert!(
+        file.deref_c_str(file.ptr_from_rva64::<u8>(u64::MAX).cast())
+            .is_none()
+    );
 }
 
 #[test]
@@ -121,20 +124,23 @@ fn elf_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .dvaddr_c_str(vaddr)
+        .deref_c_str(file.ptr_from_vaddr::<u8>(vaddr).cast())
         .expect("known mapped virtual address should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(name, "mmap");
-    let alias_name = file
-        .derva_c_str(vaddr)
-        .expect("backward-compatible alias should decode the same C string")
+    let ptr_name = file
+        .c_str_at_vaddr(vaddr)
+        .expect("format-specific helper should decode the same C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
-    assert_eq!(alias_name, "mmap");
+    assert_eq!(ptr_name, "mmap");
 
     assert!(file.read_vaddr::<u32>(u64::MAX).is_none());
-    assert!(file.dvaddr_c_str(u64::MAX).is_none());
+    assert!(
+        file.deref_c_str(file.ptr_from_vaddr::<u8>(u64::MAX).cast())
+            .is_none()
+    );
 }
 
 #[test]
@@ -174,18 +180,21 @@ fn mach_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .dvmaddr_c_str(vmaddr)
+        .deref_c_str(file.ptr_from_vmaddr::<u8>(vmaddr).cast())
         .expect("known mapped VM address should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(name, "__TEXT");
-    let alias_name = file
-        .derva_c_str(vmaddr)
-        .expect("backward-compatible alias should decode the same C string")
+    let ptr_name = file
+        .c_str_at_vmaddr(vmaddr)
+        .expect("format-specific helper should decode the same C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
-    assert_eq!(alias_name, "__TEXT");
+    assert_eq!(ptr_name, "__TEXT");
 
     assert!(file.read_vmaddr::<u32>(u64::MAX).is_none());
-    assert!(file.dvmaddr_c_str(u64::MAX).is_none());
+    assert!(
+        file.deref_c_str(file.ptr_from_vmaddr::<u8>(u64::MAX).cast())
+            .is_none()
+    );
 }

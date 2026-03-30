@@ -8,5 +8,7 @@ pub mod mach;
 pub mod pattern;
 pub mod pe64;
 mod scan;
+mod typed;
 pub use address::{FromLeBytes, MappedAddressView};
 pub use scan::{BinaryView, Offset};
+pub use typed::{Pod, Ptr, TypedView, Va};

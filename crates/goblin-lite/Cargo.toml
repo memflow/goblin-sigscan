@@ -9,5 +9,6 @@ description.workspace = true
 [dependencies]
 goblin = { workspace = true }
 thiserror = { workspace = true }
+bytemuck = { workspace = true }
 goblin-lite-macros = { path = "../goblin-lite-macros" }
 goblin-lite-pattern = { path = "../goblin-lite-pattern" }

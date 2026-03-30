@@ -1,9 +1,10 @@
 use std::{ffi::CStr, ops::Range};
 
-use goblin::mach::{constants::VM_PROT_EXECUTE, Mach, SingleArch};
+use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
 use thiserror::Error;
 
 use crate::{
+    Ptr,
     address::{FromLeBytes, MappedAddressView},
     scan::{BinaryView, Offset, Scanner},
 };
@@ -225,6 +226,12 @@ impl<'a> MachFile<'a> {
         self.read_le(vmaddr)
     }
 
+    /// Builds a typed pointer from a VM address.
+    #[inline]
+    pub fn ptr_from_vmaddr<T: ?Sized>(&self, vmaddr: u64) -> Ptr<T> {
+        Ptr::from_mapped(vmaddr)
+    }
+
     /// Reads a NUL-terminated C string at a VM address.
     ///
     /// # Examples
@@ -241,19 +248,13 @@ impl<'a> MachFile<'a> {
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _name = file.dvmaddr_c_str(vmaddr).and_then(|value| value.to_str().ok());
+    ///     let _name = file.c_str_at_vmaddr(vmaddr).and_then(|value| value.to_str().ok());
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn dvmaddr_c_str(&self, vmaddr: Offset) -> Option<&CStr> {
+    pub fn c_str_at_vmaddr(&self, vmaddr: Offset) -> Option<&CStr> {
         self.mapped_c_str(vmaddr)
-    }
-
-    /// Backward-compatible alias for existing call sites.
-    #[inline]
-    pub fn derva_c_str(&self, offset: Offset) -> Option<&CStr> {
-        self.dvmaddr_c_str(offset)
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {

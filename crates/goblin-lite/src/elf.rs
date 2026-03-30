@@ -1,12 +1,13 @@
 use std::{ffi::CStr, ops::Range};
 
 use goblin::elf::{
-    program_header::{PF_X, PT_LOAD},
     Elf,
+    program_header::{PF_X, PT_LOAD},
 };
 use thiserror::Error;
 
 use crate::{
+    Ptr,
     address::{FromLeBytes, MappedAddressView},
     scan::{BinaryView, Offset, Scanner},
 };
@@ -230,6 +231,12 @@ impl<'a> ElfFile<'a> {
         self.read_le(vaddr)
     }
 
+    /// Builds a typed pointer from a virtual address.
+    #[inline]
+    pub fn ptr_from_vaddr<T: ?Sized>(&self, vaddr: u64) -> Ptr<T> {
+        Ptr::from_mapped(vaddr)
+    }
+
     /// Reads a NUL-terminated C string at a virtual address.
     ///
     /// # Examples
@@ -246,19 +253,13 @@ impl<'a> ElfFile<'a> {
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _name = file.dvaddr_c_str(vaddr).and_then(|value| value.to_str().ok());
+    ///     let _name = file.c_str_at_vaddr(vaddr).and_then(|value| value.to_str().ok());
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn dvaddr_c_str(&self, vaddr: Offset) -> Option<&CStr> {
+    pub fn c_str_at_vaddr(&self, vaddr: Offset) -> Option<&CStr> {
         self.mapped_c_str(vaddr)
-    }
-
-    /// Backward-compatible alias for existing call sites.
-    #[inline]
-    pub fn derva_c_str(&self, offset: Offset) -> Option<&CStr> {
-        self.dvaddr_c_str(offset)
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
