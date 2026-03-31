@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
                 }
                 'i' | 'u' => {
                     let signed = ch == 'i';
-                    let (next_pos, op) = self.bump().ok_or(ParsePatError {
+                    let (_, op) = self.bump().ok_or(ParsePatError {
                         kind: PatError::ReadOperand,
                         position,
                     })?;
@@ -277,16 +277,18 @@ impl<'a> Parser<'a> {
                     let slot = self.save;
                     self.save += 1;
                     let atom = match (signed, op) {
-                        (true,  '1') => Atom::ReadI8(slot),
+                        (true, '1') => Atom::ReadI8(slot),
                         (false, '1') => Atom::ReadU8(slot),
-                        (true,  '2') => Atom::ReadI16(slot),
+                        (true, '2') => Atom::ReadI16(slot),
                         (false, '2') => Atom::ReadU16(slot),
-                        (true,  '4') => Atom::ReadI32(slot),
+                        (true, '4') => Atom::ReadI32(slot),
                         (false, '4') => Atom::ReadU32(slot),
-                        _ => return Err(ParsePatError {
-                            kind: PatError::ReadOperand,
-                            position,
-                        }),
+                        _ => {
+                            return Err(ParsePatError {
+                                kind: PatError::ReadOperand,
+                                position,
+                            });
+                        }
                     };
                     result.push(atom);
                 }
@@ -307,10 +309,12 @@ impl<'a> Parser<'a> {
                     })?;
                     let align = match op {
                         '0'..='9' => op as u8 - b'0',
-                        _ => return Err(ParsePatError {
-                            kind: PatError::ReadOperand,
-                            position: next_pos,
-                        }),
+                        _ => {
+                            return Err(ParsePatError {
+                                kind: PatError::ReadOperand,
+                                position: next_pos,
+                            });
+                        }
                     };
                     result.push(Atom::Aligned(align));
                 }

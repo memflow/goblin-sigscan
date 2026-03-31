@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::Atom;
+use crate::pattern::{Atom, save_len};
 
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
@@ -29,11 +29,17 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
     /// Returns `true` only when the pattern has exactly one code match.
     pub fn finds_code(&self, pat: &[Atom], save: &mut [Offset]) -> bool {
+        debug_assert!(
+            save.len() >= save_len(pat),
+            "caller-provided save buffer must cover all slots referenced by the pattern"
+        );
         let mut matches = self.matches_code(pat);
         if !matches.next(save) {
             return false;
         }
-        !matches.next(&mut [])
+
+        let mut scratch = save.to_vec();
+        !matches.next(&mut scratch)
     }
 
     /// Returns an iterator-like matcher for all code-range matches.
@@ -438,5 +444,20 @@ mod tests {
 
         assert!(matches.next(&mut save));
         assert_eq!(save[1], 2);
+    }
+
+    #[test]
+    fn finds_code_uses_consistent_save_semantics_for_uniqueness() {
+        let view = TestView::new(&[0x00, 0xaa, 0xaa]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Byte(0xaa),
+            Atom::Save(1),
+            Atom::Check(1),
+        ];
+        let mut save = [0u64; 2];
+
+        assert!(!scanner.finds_code(&pat, &mut save));
     }
 }
