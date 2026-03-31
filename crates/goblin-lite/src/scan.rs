@@ -9,6 +9,8 @@ const MAX_BACKTRACK_STATES: usize = 1_000_000;
 pub trait BinaryView {
     fn code_ranges(&self) -> &[Range<Offset>];
     fn read_u8(&self, offset: Offset) -> Option<u8>;
+    fn read_i16(&self, offset: Offset) -> Option<i16>;
+    fn read_u16(&self, offset: Offset) -> Option<u16>;
     fn read_i32(&self, offset: Offset) -> Option<i32>;
     fn read_u32(&self, offset: Offset) -> Option<u32>;
 }
@@ -138,6 +140,28 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         state.cursor = resume_cursor;
                         state.pc += 1;
                     }
+                    Atom::Jump1 => {
+                        let Some(byte) = self.view.read_u8(state.cursor) else {
+                            break;
+                        };
+                        let disp = byte as i8;
+                        let Some(base) = state.cursor.checked_add(1) else {
+                            break;
+                        };
+                        let delta = i64::from(disp);
+                        if delta >= 0 {
+                            let Some(next) = base.checked_add(delta as u64) else {
+                                break;
+                            };
+                            state.cursor = next;
+                        } else {
+                            let Some(next) = base.checked_sub((-delta) as u64) else {
+                                break;
+                            };
+                            state.cursor = next;
+                        }
+                        state.pc += 1;
+                    }
                     Atom::Jump4 => {
                         let Some(disp) = self.view.read_i32(state.cursor) else {
                             break;
@@ -159,6 +183,71 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         }
                         state.pc += 1;
                     }
+                    Atom::ReadI8(slot) => {
+                        let Some(value) = self.view.read_u8(state.cursor) else {
+                            break;
+                        };
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = (value as i8) as i64 as u64;
+                        }
+                        let Some(next) = state.cursor.checked_add(1) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::ReadU8(slot) => {
+                        let Some(value) = self.view.read_u8(state.cursor) else {
+                            break;
+                        };
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = u64::from(value);
+                        }
+                        let Some(next) = state.cursor.checked_add(1) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::ReadI16(slot) => {
+                        let Some(value) = self.view.read_i16(state.cursor) else {
+                            break;
+                        };
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = value as i64 as u64;
+                        }
+                        let Some(next) = state.cursor.checked_add(2) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::ReadU16(slot) => {
+                        let Some(value) = self.view.read_u16(state.cursor) else {
+                            break;
+                        };
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = u64::from(value);
+                        }
+                        let Some(next) = state.cursor.checked_add(2) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::ReadI32(slot) => {
+                        let Some(value) = self.view.read_i32(state.cursor) else {
+                            break;
+                        };
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = value as i64 as u64;
+                        }
+                        let Some(next) = state.cursor.checked_add(4) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
                     Atom::ReadU32(slot) => {
                         let Some(value) = self.view.read_u32(state.cursor) else {
                             break;
@@ -170,6 +259,33 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::Zero(slot) => {
+                        if let Some(dst) = state.save.get_mut(usize::from(slot)) {
+                            *dst = 0;
+                        }
+                        state.pc += 1;
+                    }
+                    Atom::Back(n) => {
+                        let Some(next) = state.cursor.checked_sub(u64::from(n)) else {
+                            break;
+                        };
+                        state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::Aligned(align) => {
+                        let mask = (1u64 << u64::from(align)).wrapping_sub(1);
+                        if state.cursor & mask != 0 {
+                            break;
+                        }
+                        state.pc += 1;
+                    }
+                    Atom::Check(slot) => {
+                        let expected = state.save.get(usize::from(slot)).copied().unwrap_or(0);
+                        if state.cursor != expected {
+                            break;
+                        }
                         state.pc += 1;
                     }
                     Atom::Case(skip) => {
@@ -271,6 +387,14 @@ mod tests {
             usize::try_from(offset)
                 .ok()
                 .and_then(|index| self.bytes.get(index).copied())
+        }
+
+        fn read_i16(&self, _offset: Offset) -> Option<i16> {
+            None
+        }
+
+        fn read_u16(&self, _offset: Offset) -> Option<u16> {
+            None
         }
 
         fn read_i32(&self, _offset: Offset) -> Option<i32> {
