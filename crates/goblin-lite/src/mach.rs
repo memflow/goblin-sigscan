@@ -4,8 +4,8 @@ use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
 use thiserror::Error;
 
 use crate::{
-    Ptr,
-    address::{FromLeBytes, MappedAddressView},
+    Pod, Ptr, TypedView,
+    address::MappedAddressView,
     scan::{BinaryView, Offset, Scanner},
 };
 
@@ -201,7 +201,7 @@ impl<'a> MachFile<'a> {
         })
     }
 
-    /// Reads a copied little-endian value from a VM address.
+    /// Reads a borrowed POD reference from a VM address.
     ///
     /// # Examples
     ///
@@ -217,13 +217,19 @@ impl<'a> MachFile<'a> {
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _value = file.read_vmaddr::<u32>(vmaddr);
+    ///     let _value = file.deref_vmaddr::<u32>(vmaddr);
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn read_vmaddr<T: FromLeBytes>(&self, vmaddr: Offset) -> Option<T> {
-        self.read_le(vmaddr)
+    pub fn deref_vmaddr<T: Pod>(&self, vmaddr: u64) -> Option<&T> {
+        self.deref(self.ptr_from_vmaddr(vmaddr))
+    }
+
+    /// Reads a copied POD value from a VM address.
+    #[inline]
+    pub fn deref_copy_vmaddr<T: Pod>(&self, vmaddr: u64) -> Option<T> {
+        self.deref_copy(self.ptr_from_vmaddr(vmaddr))
     }
 
     /// Builds a typed pointer from a VM address.
@@ -248,13 +254,15 @@ impl<'a> MachFile<'a> {
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _name = file.c_str_at_vmaddr(vmaddr).and_then(|value| value.to_str().ok());
+    ///     let _name = file
+    ///         .deref_c_str_vmaddr(vmaddr)
+    ///         .and_then(|value| value.to_str().ok());
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn c_str_at_vmaddr(&self, vmaddr: Offset) -> Option<&CStr> {
-        self.mapped_c_str(vmaddr)
+    pub fn deref_c_str_vmaddr(&self, vmaddr: u64) -> Option<&CStr> {
+        self.deref_c_str(self.ptr_from_vmaddr::<u8>(vmaddr).cast())
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
@@ -297,11 +305,11 @@ impl BinaryView for MachFile<'_> {
     }
 
     fn read_i32(&self, offset: Offset) -> Option<i32> {
-        self.read_vmaddr(offset)
+        self.read_le(offset)
     }
 
     fn read_u32(&self, offset: Offset) -> Option<u32> {
-        self.read_vmaddr(offset)
+        self.read_le(offset)
     }
 }
 

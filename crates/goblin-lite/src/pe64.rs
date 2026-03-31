@@ -7,8 +7,8 @@ use goblin::pe::{
 use thiserror::Error;
 
 use crate::{
-    Ptr,
-    address::{FromLeBytes, MappedAddressView},
+    Pod, Ptr, TypedView,
+    address::MappedAddressView,
     scan::{BinaryView, Offset, Scanner},
 };
 
@@ -131,7 +131,7 @@ impl<'a> PeFile<'a> {
         self.bytes
     }
 
-    /// Reads a copied little-endian value from an RVA.
+    /// Reads a borrowed POD reference from an RVA.
     ///
     /// # Examples
     ///
@@ -147,30 +147,54 @@ impl<'a> PeFile<'a> {
     ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _value = file.read_rva::<u32>(rva);
+    ///     let _value = file.deref_rva::<u32>(rva);
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn read_rva<T: FromLeBytes>(&self, rva: Offset) -> Option<T> {
-        self.read_le(rva)
+    pub fn deref_rva<T: Pod>(&self, rva: u64) -> Option<&T> {
+        self.deref(self.ptr_from_rva(rva))
     }
 
-    /// Builds a typed pointer from a 32-bit RVA.
+    /// Reads a copied POD value from an RVA.
     #[inline]
-    pub fn ptr_from_rva32<T: ?Sized>(&self, rva: u32) -> Ptr<T> {
-        Ptr::from_mapped(Offset::from(rva))
+    pub fn deref_copy_rva<T: Pod>(&self, rva: u64) -> Option<T> {
+        self.deref_copy(self.ptr_from_rva(rva))
+    }
+
+    /// Reads a NUL-terminated C string at an RVA.
+    #[inline]
+    pub fn deref_c_str_rva(&self, rva: u64) -> Option<&CStr> {
+        self.deref_c_str(self.ptr_from_rva::<u8>(rva).cast())
+    }
+
+    /// Reads a borrowed POD reference from a virtual address.
+    #[inline]
+    pub fn deref_va<T: Pod>(&self, va: u64) -> Option<&T> {
+        self.deref_rva(self.va_to_rva(va)?)
+    }
+
+    /// Reads a copied POD value from a virtual address.
+    #[inline]
+    pub fn deref_copy_va<T: Pod>(&self, va: u64) -> Option<T> {
+        self.deref_copy_rva(self.va_to_rva(va)?)
+    }
+
+    /// Reads a NUL-terminated C string at a virtual address.
+    #[inline]
+    pub fn deref_c_str_va(&self, va: u64) -> Option<&CStr> {
+        self.deref_c_str_rva(self.va_to_rva(va)?)
     }
 
     /// Builds a typed pointer from an RVA.
     #[inline]
-    pub fn ptr_from_rva64<T: ?Sized>(&self, rva: u64) -> Ptr<T> {
+    pub fn ptr_from_rva<T: ?Sized>(&self, rva: u64) -> Ptr<T> {
         Ptr::from_mapped(rva)
     }
 
     /// Builds a typed pointer from a virtual address.
     #[inline]
-    pub fn ptr_from_va64<T: ?Sized>(&self, va: u64) -> Option<Ptr<T>> {
+    pub fn ptr_from_va<T: ?Sized>(&self, va: u64) -> Option<Ptr<T>> {
         self.va_to_rva(va).map(Ptr::from_mapped)
     }
 
@@ -230,31 +254,6 @@ impl<'a> PeFile<'a> {
             .map(|header| header.windows_fields.image_base)?;
         let rva = va.checked_sub(image_base)?;
         self.rva_to_file_offset(rva).map(|_| rva)
-    }
-
-    /// Reads a NUL-terminated C string at an RVA.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use std::error::Error;
-    ///
-    /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
-    ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
-    ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
-    ///         return Ok(());
-    ///     };
-    ///     let _name = file.c_str_at_rva(rva).and_then(|value| value.to_str().ok());
-    ///     Ok(())
-    /// }
-    /// ```
-    #[inline]
-    pub fn c_str_at_rva(&self, rva: Offset) -> Option<&CStr> {
-        self.mapped_c_str(rva)
     }
 
     /// Converts an RVA into a file offset.
@@ -370,10 +369,10 @@ impl BinaryView for PeFile<'_> {
     }
 
     fn read_i32(&self, offset: Offset) -> Option<i32> {
-        self.read_rva(offset)
+        self.read_le(offset)
     }
 
     fn read_u32(&self, offset: Offset) -> Option<u32> {
-        self.read_rva(offset)
+        self.read_le(offset)
     }
 }

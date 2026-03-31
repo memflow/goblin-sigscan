@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use goblin_lite::{MappedAddressView, TypedView, elf::ElfFile, mach::MachFile, pe64::PeFile};
+use goblin_lite::{elf::ElfFile, mach::MachFile, pe64::PeFile, MappedAddressView};
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";
@@ -49,7 +49,7 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     assert_eq!(file.mapped_to_file_offset(rva), Some(PE_MMAP_FILE_OFFSET));
 
     let value = file
-        .read_rva::<u32>(rva)
+        .deref_copy_rva::<u32>(rva)
         .expect("known mapped RVA should decode a u32");
     assert_eq!(value, read_le_u32(&bytes, PE_MMAP_FILE_OFFSET));
     assert_eq!(
@@ -58,7 +58,7 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .deref_c_str(file.ptr_from_rva64::<u8>(rva).cast())
+        .deref_c_str_rva(rva)
         .expect("known mapped RVA should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
@@ -79,11 +79,10 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     assert_eq!(va, image_base + rva);
     assert_eq!(file.va_to_rva(va), Some(rva));
 
-    assert!(file.read_rva::<u32>(u64::MAX).is_none());
-    assert!(
-        file.deref_c_str(file.ptr_from_rva64::<u8>(u64::MAX).cast())
-            .is_none()
-    );
+    assert!(file.deref_copy_rva::<u32>(u64::MAX).is_none());
+    assert!(file.deref_c_str_rva(u64::MAX).is_none());
+    assert!(file.deref_copy_va::<u32>(u64::MAX).is_none());
+    assert!(file.deref_c_str_va(u64::MAX).is_none());
 }
 
 #[test]
@@ -115,7 +114,7 @@ fn elf_addressing_helpers_roundtrip_and_read() {
     );
 
     let value = file
-        .read_vaddr::<u32>(vaddr)
+        .deref_copy_vaddr::<u32>(vaddr)
         .expect("known mapped virtual address should decode a u32");
     assert_eq!(value, read_le_u32(&bytes, ELF_MMAP_FILE_OFFSET));
     assert_eq!(
@@ -124,23 +123,20 @@ fn elf_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .deref_c_str(file.ptr_from_vaddr::<u8>(vaddr).cast())
+        .deref_c_str_vaddr(vaddr)
         .expect("known mapped virtual address should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(name, "mmap");
     let ptr_name = file
-        .c_str_at_vaddr(vaddr)
+        .deref_c_str_vaddr(vaddr)
         .expect("format-specific helper should decode the same C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(ptr_name, "mmap");
 
-    assert!(file.read_vaddr::<u32>(u64::MAX).is_none());
-    assert!(
-        file.deref_c_str(file.ptr_from_vaddr::<u8>(u64::MAX).cast())
-            .is_none()
-    );
+    assert!(file.deref_copy_vaddr::<u32>(u64::MAX).is_none());
+    assert!(file.deref_c_str_vaddr(u64::MAX).is_none());
 }
 
 #[test]
@@ -171,7 +167,7 @@ fn mach_addressing_helpers_roundtrip_and_read() {
     );
 
     let value = file
-        .read_vmaddr::<u32>(vmaddr)
+        .deref_copy_vmaddr::<u32>(vmaddr)
         .expect("known mapped VM address should decode a u32");
     assert_eq!(value, read_le_u32(&bytes, MACH_TEXT_FILE_OFFSET));
     assert_eq!(
@@ -180,21 +176,18 @@ fn mach_addressing_helpers_roundtrip_and_read() {
     );
 
     let name = file
-        .deref_c_str(file.ptr_from_vmaddr::<u8>(vmaddr).cast())
+        .deref_c_str_vmaddr(vmaddr)
         .expect("known mapped VM address should decode as C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(name, "__TEXT");
     let ptr_name = file
-        .c_str_at_vmaddr(vmaddr)
+        .deref_c_str_vmaddr(vmaddr)
         .expect("format-specific helper should decode the same C string")
         .to_str()
         .expect("fixture C string should be UTF-8");
     assert_eq!(ptr_name, "__TEXT");
 
-    assert!(file.read_vmaddr::<u32>(u64::MAX).is_none());
-    assert!(
-        file.deref_c_str(file.ptr_from_vmaddr::<u8>(u64::MAX).cast())
-            .is_none()
-    );
+    assert!(file.deref_copy_vmaddr::<u32>(u64::MAX).is_none());
+    assert!(file.deref_c_str_vmaddr(u64::MAX).is_none());
 }

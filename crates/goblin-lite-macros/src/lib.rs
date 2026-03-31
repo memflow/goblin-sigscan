@@ -1,6 +1,6 @@
 use goblin_lite_pattern::Atom;
 use proc_macro::{Delimiter, Literal, TokenStream, TokenTree};
-use proc_macro_crate::{crate_name, FoundCrate};
+use proc_macro_crate::{FoundCrate, crate_name};
 
 /// Compile-time pattern parser.
 ///

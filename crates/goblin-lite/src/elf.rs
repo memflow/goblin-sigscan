@@ -7,8 +7,8 @@ use goblin::elf::{
 use thiserror::Error;
 
 use crate::{
-    Ptr,
-    address::{FromLeBytes, MappedAddressView},
+    Pod, Ptr, TypedView,
+    address::MappedAddressView,
     scan::{BinaryView, Offset, Scanner},
 };
 
@@ -206,7 +206,7 @@ impl<'a> ElfFile<'a> {
         })
     }
 
-    /// Reads a copied little-endian value from a virtual address.
+    /// Reads a borrowed POD reference from a virtual address.
     ///
     /// # Examples
     ///
@@ -222,13 +222,19 @@ impl<'a> ElfFile<'a> {
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _value = file.read_vaddr::<u32>(vaddr);
+    ///     let _value = file.deref_vaddr::<u32>(vaddr);
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn read_vaddr<T: FromLeBytes>(&self, vaddr: Offset) -> Option<T> {
-        self.read_le(vaddr)
+    pub fn deref_vaddr<T: Pod>(&self, vaddr: u64) -> Option<&T> {
+        self.deref(self.ptr_from_vaddr(vaddr))
+    }
+
+    /// Reads a copied POD value from a virtual address.
+    #[inline]
+    pub fn deref_copy_vaddr<T: Pod>(&self, vaddr: u64) -> Option<T> {
+        self.deref_copy(self.ptr_from_vaddr(vaddr))
     }
 
     /// Builds a typed pointer from a virtual address.
@@ -253,13 +259,15 @@ impl<'a> ElfFile<'a> {
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());
     ///     };
-    ///     let _name = file.c_str_at_vaddr(vaddr).and_then(|value| value.to_str().ok());
+    ///     let _name = file
+    ///         .deref_c_str_vaddr(vaddr)
+    ///         .and_then(|value| value.to_str().ok());
     ///     Ok(())
     /// }
     /// ```
     #[inline]
-    pub fn c_str_at_vaddr(&self, vaddr: Offset) -> Option<&CStr> {
-        self.mapped_c_str(vaddr)
+    pub fn deref_c_str_vaddr(&self, vaddr: u64) -> Option<&CStr> {
+        self.deref_c_str(self.ptr_from_vaddr::<u8>(vaddr).cast())
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
@@ -302,10 +310,10 @@ impl BinaryView for ElfFile<'_> {
     }
 
     fn read_i32(&self, offset: Offset) -> Option<i32> {
-        self.read_vaddr(offset)
+        self.read_le(offset)
     }
 
     fn read_u32(&self, offset: Offset) -> Option<u32> {
-        self.read_vaddr(offset)
+        self.read_le(offset)
     }
 }

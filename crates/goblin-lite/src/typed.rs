@@ -234,4 +234,13 @@ mod tests {
 
         assert!(view.deref_c_str(Ptr::<CStr>::null()).is_none());
     }
+
+    #[test]
+    fn deref_c_str_rejects_unterminated_bytes() {
+        let view = TestView {
+            bytes: vec![0, 0, 0, 0, 0, 0, 0, 0, b'f', b'o', b'o', b'x'],
+        };
+        let ptr = Ptr::<u8>::from_mapped(203).cast::<CStr>();
+        assert!(view.deref_c_str(ptr).is_none());
+    }
 }
