@@ -41,6 +41,7 @@ impl std::error::Error for ParsePatError {}
 pub enum PatError {
     UnpairedHexDigit,
     UnknownChar,
+    UnclosedQuote,
     SaveOverflow,
     ReadOperand,
     SkipOperand,
@@ -56,6 +57,7 @@ impl PatError {
         match self {
             PatError::UnpairedHexDigit => "unpaired hex digit",
             PatError::UnknownChar => "unknown character",
+            PatError::UnclosedQuote => "string missing end quote",
             PatError::SaveOverflow => "save store overflow",
             PatError::ReadOperand => "read operand error",
             PatError::SkipOperand => "skip operand error",
@@ -73,6 +75,8 @@ impl PatError {
 pub enum Atom {
     /// Matches a single byte.
     Byte(u8),
+    /// Applies a bitmask to the next byte comparison.
+    Fuzzy(u8),
     /// Captures the cursor RVA in the save slot.
     Save(u8),
     /// Skips a fixed number of bytes.
@@ -83,14 +87,36 @@ pub enum Atom {
     Push(u8),
     /// Returns from a recursive sub-pattern.
     Pop,
+    /// Follows a signed 1-byte relative jump.
+    Jump1,
     /// Follows a signed 4-byte relative jump.
     Jump4,
+    /// Reads and sign-extends the byte under the cursor, writes to slot, advances by 1.
+    ReadI8(u8),
+    /// Reads and zero-extends the byte under the cursor, writes to slot, advances by 1.
+    ReadU8(u8),
+    /// Reads a little-endian `i16`, sign-extends, stores in save slot, advances by 2.
+    ReadI16(u8),
+    /// Reads a little-endian `u16`, zero-extends, stores in save slot, advances by 2.
+    ReadU16(u8),
+    /// Reads a little-endian `i32`, sign-extends, stores in save slot, advances by 4.
+    ReadI32(u8),
     /// Reads a little-endian `u32`, stores it in save slot, and advances the cursor by 4.
     ReadU32(u8),
+    /// Writes zero to the given save slot without advancing the cursor.
+    Zero(u8),
+    /// Rewinds the cursor by a fixed number of bytes.
+    Back(u8),
+    /// Fails if the cursor is not aligned to `(1 << value)` bytes.
+    Aligned(u8),
+    /// Fails if the cursor does not equal the value in the given save slot.
+    Check(u8),
     /// Branches to an alternate pattern arm on failure.
     Case(u16),
     /// Jumps past remaining alternate arms when current arm succeeds.
     Break(u16),
+    /// No-op instruction used to keep pattern control-flow offsets stable.
+    Nop,
 }
 
 /// Patterns are a list of [`Atom`]s.
@@ -100,7 +126,15 @@ pub type Pattern = Vec<Atom>;
 pub fn save_len(pat: &[Atom]) -> usize {
     pat.iter()
         .filter_map(|atom| match atom {
-            Atom::Save(slot) | Atom::ReadU32(slot) => Some(usize::from(*slot) + 1),
+            Atom::Save(slot)
+            | Atom::ReadI8(slot)
+            | Atom::ReadU8(slot)
+            | Atom::ReadI16(slot)
+            | Atom::ReadU16(slot)
+            | Atom::ReadI32(slot)
+            | Atom::ReadU32(slot)
+            | Atom::Zero(slot)
+            | Atom::Check(slot) => Some(usize::from(*slot) + 1),
             _ => None,
         })
         .max()
@@ -178,7 +212,18 @@ impl<'a> Parser<'a> {
             self.bump();
             match ch {
                 ' ' | '\n' | '\r' | '\t' => {}
-                '?' => push_skip(&mut result, 1),
+                '?' => {
+                    if let Some((_, lo_ch)) = self.peek()
+                        && lo_ch.is_ascii_hexdigit()
+                    {
+                        self.bump();
+                        let lo = hex_value(lo_ch).expect("ascii hex already validated");
+                        result.push(Atom::Fuzzy(0x0f));
+                        result.push(Atom::Byte(lo));
+                    } else {
+                        push_skip(&mut result, 1);
+                    }
+                }
                 '[' => self.parse_skip_operand(position, &mut result)?,
                 '\'' => {
                     if self.save == u8::MAX {
@@ -190,7 +235,30 @@ impl<'a> Parser<'a> {
                     result.push(Atom::Save(self.save));
                     self.save += 1;
                 }
+                '%' => result.push(Atom::Jump1),
                 '$' => result.push(Atom::Jump4),
+                '"' => {
+                    let mut closed = false;
+                    while let Some((_, next)) = self.bump() {
+                        if next == '"' {
+                            closed = true;
+                            break;
+                        }
+                        if !next.is_ascii() {
+                            return Err(ParsePatError {
+                                kind: PatError::UnknownChar,
+                                position,
+                            });
+                        }
+                        result.push(Atom::Byte(next as u8));
+                    }
+                    if !closed {
+                        return Err(ParsePatError {
+                            kind: PatError::UnclosedQuote,
+                            position,
+                        });
+                    }
+                }
                 '{' => {
                     if self.depth == u16::MAX {
                         return Err(ParsePatError {
@@ -206,6 +274,10 @@ impl<'a> Parser<'a> {
                         });
                     };
                     let replaced = match *last {
+                        Atom::Jump1 => {
+                            *last = Atom::Push(1);
+                            Atom::Jump1
+                        }
                         Atom::Jump4 => {
                             *last = Atom::Push(4);
                             Atom::Jump4
@@ -229,25 +301,61 @@ impl<'a> Parser<'a> {
                     self.depth -= 1;
                     result.push(Atom::Pop);
                 }
-                'u' => {
+                'i' | 'u' => {
+                    let signed = ch == 'i';
                     let (_, op) = self.bump().ok_or(ParsePatError {
                         kind: PatError::ReadOperand,
                         position,
                     })?;
-                    if op != '4' {
-                        return Err(ParsePatError {
-                            kind: PatError::ReadOperand,
-                            position,
-                        });
-                    }
                     if self.save == u8::MAX {
                         return Err(ParsePatError {
                             kind: PatError::SaveOverflow,
                             position,
                         });
                     }
-                    result.push(Atom::ReadU32(self.save));
+                    let slot = self.save;
                     self.save += 1;
+                    let atom = match (signed, op) {
+                        (true, '1') => Atom::ReadI8(slot),
+                        (false, '1') => Atom::ReadU8(slot),
+                        (true, '2') => Atom::ReadI16(slot),
+                        (false, '2') => Atom::ReadU16(slot),
+                        (true, '4') => Atom::ReadI32(slot),
+                        (false, '4') => Atom::ReadU32(slot),
+                        _ => {
+                            return Err(ParsePatError {
+                                kind: PatError::ReadOperand,
+                                position,
+                            });
+                        }
+                    };
+                    result.push(atom);
+                }
+                'z' => {
+                    if self.save == u8::MAX {
+                        return Err(ParsePatError {
+                            kind: PatError::SaveOverflow,
+                            position,
+                        });
+                    }
+                    result.push(Atom::Zero(self.save));
+                    self.save += 1;
+                }
+                '@' => {
+                    let (next_pos, op) = self.bump().ok_or(ParsePatError {
+                        kind: PatError::ReadOperand,
+                        position,
+                    })?;
+                    let align = match op {
+                        '0'..='9' => op as u8 - b'0',
+                        _ => {
+                            return Err(ParsePatError {
+                                kind: PatError::ReadOperand,
+                                position: next_pos,
+                            });
+                        }
+                    };
+                    result.push(Atom::Aligned(align));
                 }
                 '(' => {
                     let alts = self.parse_group(position)?;
@@ -258,6 +366,12 @@ impl<'a> Parser<'a> {
                         kind: PatError::UnpairedHexDigit,
                         position,
                     })?;
+                    if lo_ch == '?' {
+                        let hi = hex_value(ch).expect("ascii hex already validated");
+                        result.push(Atom::Fuzzy(0xf0));
+                        result.push(Atom::Byte(hi << 4));
+                        continue;
+                    }
                     if !lo_ch.is_ascii_hexdigit() {
                         return Err(ParsePatError {
                             kind: PatError::UnpairedHexDigit,
@@ -560,12 +674,25 @@ mod tests {
                 Atom::Byte(0xb3),
             ])
         );
+
+        assert_eq!(
+            parse("\"hello\" 00"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Byte(b'h'),
+                Atom::Byte(b'e'),
+                Atom::Byte(b'l'),
+                Atom::Byte(b'l'),
+                Atom::Byte(b'o'),
+                Atom::Byte(0x00),
+            ])
+        );
     }
 
     #[test]
     fn reports_error_position() {
         assert_eq!(
-            parse("4?") as Result<Vec<Atom>, ParsePatError>,
+            parse("4G") as Result<Vec<Atom>, ParsePatError>,
             Err(ParsePatError {
                 kind: PatError::UnpairedHexDigit,
                 position: 1,
@@ -576,6 +703,14 @@ mod tests {
             parse("u8") as Result<Vec<Atom>, ParsePatError>,
             Err(ParsePatError {
                 kind: PatError::ReadOperand,
+                position: 0,
+            })
+        );
+
+        assert_eq!(
+            parse("\"unterminated") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::UnclosedQuote,
                 position: 0,
             })
         );
@@ -612,5 +747,21 @@ mod tests {
                 position: 0,
             })
         );
+    }
+
+    #[test]
+    fn supports_nibble_bitmask_syntax() {
+        assert_eq!(
+            parse("A? ?B"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Fuzzy(0xf0),
+                Atom::Byte(0xa0),
+                Atom::Fuzzy(0x0f),
+                Atom::Byte(0x0b),
+            ])
+        );
+
+        assert_eq!(parse("??"), Ok(vec![Atom::Save(0)]));
     }
 }

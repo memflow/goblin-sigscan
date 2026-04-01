@@ -304,6 +304,14 @@ impl BinaryView for MachFile<'_> {
         self.bytes.get(file_offset).copied()
     }
 
+    fn read_i16(&self, offset: Offset) -> Option<i16> {
+        self.read_le(offset)
+    }
+
+    fn read_u16(&self, offset: Offset) -> Option<u16> {
+        self.read_le(offset)
+    }
+
     fn read_i32(&self, offset: Offset) -> Option<i32> {
         self.read_le(offset)
     }

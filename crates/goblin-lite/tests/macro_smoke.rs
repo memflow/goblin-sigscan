@@ -22,3 +22,19 @@ fn proc_macro_matches_runtime_parser_for_range_skips() {
     let compile_time = pat!("48891d[5-9]4c63b3");
     assert_eq!(compile_time, runtime.as_slice());
 }
+
+#[test]
+fn proc_macro_matches_runtime_parser_for_nibble_masks() {
+    let source = "A? ?B";
+    let runtime = pattern::parse(source).expect("runtime parser failed");
+    let compile_time = pat!("A? ?B");
+    assert_eq!(compile_time, runtime.as_slice());
+}
+
+#[test]
+fn proc_macro_matches_runtime_parser_for_string_literals() {
+    let source = "\"hello\" 00";
+    let runtime = pattern::parse(source).expect("runtime parser failed");
+    let compile_time = pat!("\"hello\" 00");
+    assert_eq!(compile_time, runtime.as_slice());
+}
