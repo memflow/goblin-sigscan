@@ -41,6 +41,7 @@ impl std::error::Error for ParsePatError {}
 pub enum PatError {
     UnpairedHexDigit,
     UnknownChar,
+    UnclosedQuote,
     SaveOverflow,
     ReadOperand,
     SkipOperand,
@@ -56,6 +57,7 @@ impl PatError {
         match self {
             PatError::UnpairedHexDigit => "unpaired hex digit",
             PatError::UnknownChar => "unknown character",
+            PatError::UnclosedQuote => "string missing end quote",
             PatError::SaveOverflow => "save store overflow",
             PatError::ReadOperand => "read operand error",
             PatError::SkipOperand => "skip operand error",
@@ -73,6 +75,8 @@ impl PatError {
 pub enum Atom {
     /// Matches a single byte.
     Byte(u8),
+    /// Applies a bitmask to the next byte comparison.
+    Fuzzy(u8),
     /// Captures the cursor RVA in the save slot.
     Save(u8),
     /// Skips a fixed number of bytes.
@@ -111,6 +115,8 @@ pub enum Atom {
     Case(u16),
     /// Jumps past remaining alternate arms when current arm succeeds.
     Break(u16),
+    /// No-op instruction used to keep pattern control-flow offsets stable.
+    Nop,
 }
 
 /// Patterns are a list of [`Atom`]s.
@@ -206,7 +212,18 @@ impl<'a> Parser<'a> {
             self.bump();
             match ch {
                 ' ' | '\n' | '\r' | '\t' => {}
-                '?' => push_skip(&mut result, 1),
+                '?' => {
+                    if let Some((_, lo_ch)) = self.peek()
+                        && lo_ch.is_ascii_hexdigit()
+                    {
+                        self.bump();
+                        let lo = hex_value(lo_ch).expect("ascii hex already validated");
+                        result.push(Atom::Fuzzy(0x0f));
+                        result.push(Atom::Byte(lo));
+                    } else {
+                        push_skip(&mut result, 1);
+                    }
+                }
                 '[' => self.parse_skip_operand(position, &mut result)?,
                 '\'' => {
                     if self.save == u8::MAX {
@@ -220,6 +237,28 @@ impl<'a> Parser<'a> {
                 }
                 '%' => result.push(Atom::Jump1),
                 '$' => result.push(Atom::Jump4),
+                '"' => {
+                    let mut closed = false;
+                    while let Some((_, next)) = self.bump() {
+                        if next == '"' {
+                            closed = true;
+                            break;
+                        }
+                        if !next.is_ascii() {
+                            return Err(ParsePatError {
+                                kind: PatError::UnknownChar,
+                                position,
+                            });
+                        }
+                        result.push(Atom::Byte(next as u8));
+                    }
+                    if !closed {
+                        return Err(ParsePatError {
+                            kind: PatError::UnclosedQuote,
+                            position,
+                        });
+                    }
+                }
                 '{' => {
                     if self.depth == u16::MAX {
                         return Err(ParsePatError {
@@ -327,6 +366,12 @@ impl<'a> Parser<'a> {
                         kind: PatError::UnpairedHexDigit,
                         position,
                     })?;
+                    if lo_ch == '?' {
+                        let hi = hex_value(ch).expect("ascii hex already validated");
+                        result.push(Atom::Fuzzy(0xf0));
+                        result.push(Atom::Byte(hi << 4));
+                        continue;
+                    }
                     if !lo_ch.is_ascii_hexdigit() {
                         return Err(ParsePatError {
                             kind: PatError::UnpairedHexDigit,
@@ -629,12 +674,25 @@ mod tests {
                 Atom::Byte(0xb3),
             ])
         );
+
+        assert_eq!(
+            parse("\"hello\" 00"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Byte(b'h'),
+                Atom::Byte(b'e'),
+                Atom::Byte(b'l'),
+                Atom::Byte(b'l'),
+                Atom::Byte(b'o'),
+                Atom::Byte(0x00),
+            ])
+        );
     }
 
     #[test]
     fn reports_error_position() {
         assert_eq!(
-            parse("4?") as Result<Vec<Atom>, ParsePatError>,
+            parse("4G") as Result<Vec<Atom>, ParsePatError>,
             Err(ParsePatError {
                 kind: PatError::UnpairedHexDigit,
                 position: 1,
@@ -645,6 +703,14 @@ mod tests {
             parse("u8") as Result<Vec<Atom>, ParsePatError>,
             Err(ParsePatError {
                 kind: PatError::ReadOperand,
+                position: 0,
+            })
+        );
+
+        assert_eq!(
+            parse("\"unterminated") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::UnclosedQuote,
                 position: 0,
             })
         );
@@ -681,5 +747,21 @@ mod tests {
                 position: 0,
             })
         );
+    }
+
+    #[test]
+    fn supports_nibble_bitmask_syntax() {
+        assert_eq!(
+            parse("A? ?B"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Fuzzy(0xf0),
+                Atom::Byte(0xa0),
+                Atom::Fuzzy(0x0f),
+                Atom::Byte(0x0b),
+            ])
+        );
+
+        assert_eq!(parse("??"), Ok(vec![Atom::Save(0)]));
     }
 }

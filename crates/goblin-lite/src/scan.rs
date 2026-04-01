@@ -59,6 +59,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             pc: usize,
             save: Vec<Offset>,
             calls: Vec<Offset>,
+            fuzzy: Option<u8>,
         }
 
         let mut stack = vec![State {
@@ -66,6 +67,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             pc: 0,
             save: save.to_vec(),
             calls: Vec::new(),
+            fuzzy: None,
         }];
 
         while let Some(mut state) = stack.pop() {
@@ -82,13 +84,18 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         let Some(actual) = self.view.read_u8(state.cursor) else {
                             break;
                         };
-                        if actual != expected {
+                        let mask = state.fuzzy.take().unwrap_or(u8::MAX);
+                        if (actual & mask) != (expected & mask) {
                             break;
                         }
                         let Some(next) = state.cursor.checked_add(1) else {
                             break;
                         };
                         state.cursor = next;
+                        state.pc += 1;
+                    }
+                    Atom::Fuzzy(mask) => {
+                        state.fuzzy = Some(mask);
                         state.pc += 1;
                     }
                     Atom::Save(slot) => {
@@ -320,6 +327,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         };
                         state.pc = next_pc;
                     }
+                    Atom::Nop => {
+                        state.pc += 1;
+                    }
                 }
             }
         }
@@ -444,6 +454,33 @@ mod tests {
 
         assert!(matches.next(&mut save));
         assert_eq!(save[1], 2);
+    }
+
+    #[test]
+    fn fuzzy_masks_only_the_next_byte_match() {
+        let view = TestView::new(&[0xab, 0x0f]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Fuzzy(0xf0),
+            Atom::Byte(0xa0),
+            Atom::Byte(0x0f),
+        ];
+        let mut save = [0u64; 1];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 0);
+    }
+
+    #[test]
+    fn nop_does_not_change_matching_behavior() {
+        let view = TestView::new(&[0x41]);
+        let scanner = Scanner::new(&view);
+        let pat = [Atom::Save(0), Atom::Nop, Atom::Byte(0x41)];
+        let mut save = [0u64; 1];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 0);
     }
 
     #[test]

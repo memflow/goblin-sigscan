@@ -52,6 +52,7 @@ fn goblin_lite_crate_root() -> String {
 fn atom_to_tokens(atom: Atom) -> String {
     match atom {
         Atom::Byte(value) => format!("Byte({value})"),
+        Atom::Fuzzy(mask) => format!("Fuzzy({mask})"),
         Atom::Save(slot) => format!("Save({slot})"),
         Atom::Skip(skip) => format!("Skip({skip})"),
         Atom::SkipRange(min, max) => format!("SkipRange({min}, {max})"),
@@ -71,6 +72,7 @@ fn atom_to_tokens(atom: Atom) -> String {
         Atom::Check(slot) => format!("Check({slot})"),
         Atom::Case(skip) => format!("Case({skip})"),
         Atom::Break(skip) => format!("Break({skip})"),
+        Atom::Nop => "Nop".to_owned(),
     }
 }
 
