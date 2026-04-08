@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{Atom, save_len};
+use crate::pattern::{save_len, Atom};
 use memchr::memchr_iter;
 
 pub type Offset = u64;
@@ -149,11 +149,28 @@ impl<'a, B: BinaryView> ExecReader<'a, B> {
             return Some(index);
         }
 
-        let index = self
-            .view
-            .code_spans()
-            .iter()
-            .position(|span| span.mapped.contains(&offset))?;
+        let spans = self.view.code_spans();
+        let mut low = 0usize;
+        let mut high = spans.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let span = &spans[mid];
+            if span.mapped.end <= offset {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+
+        let index = if let Some(span) = spans.get(low) {
+            if span.mapped.contains(&offset) {
+                Some(low)
+            } else {
+                None
+            }
+        } else {
+            None
+        }?;
         self.span_index = Some(index);
         Some(index)
     }
@@ -1097,7 +1114,7 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern};
+    use super::{build_prefix, is_linear_pattern, BinaryView, CodeSpan, Offset, Scanner};
     use crate::pattern::Atom;
 
     #[derive(Debug)]
