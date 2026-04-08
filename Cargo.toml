@@ -14,3 +14,4 @@ goblin = "0.10"
 thiserror = "2"
 proc-macro-crate = "3"
 bytemuck = { version = "1", features = ["derive"] }
+memchr = "2"

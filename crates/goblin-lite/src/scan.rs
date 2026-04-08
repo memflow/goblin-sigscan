@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crate::pattern::{save_len, Atom};
+use memchr::memchr_iter;
 
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
@@ -625,8 +626,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             return self.scan_range_first_byte(span.mapped.clone(), start, save);
         };
         let needle = self.anchor[0];
-        for (delta, byte) in haystack.iter().copied().enumerate() {
-            if byte != needle {
+        let anchor = &self.anchor[..self.anchor_len];
+        for delta in memchr_iter(needle, haystack) {
+            if self.anchor_len > 1
+                && !haystack
+                    .get(delta..delta + self.anchor_len)
+                    .is_some_and(|window| window == anchor)
+            {
                 continue;
             }
             let Some(anchor_index) = start_index.checked_add(delta) else {
