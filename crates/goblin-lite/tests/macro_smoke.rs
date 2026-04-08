@@ -24,10 +24,10 @@ fn proc_macro_matches_runtime_parser_for_range_skips() {
 }
 
 #[test]
-fn proc_macro_matches_runtime_parser_for_nibble_masks() {
-    let source = "A? ?B";
+fn proc_macro_matches_runtime_parser_for_wildcards() {
+    let source = "48 8B ? ? ? ? 48 89";
     let runtime = pattern::parse(source).expect("runtime parser failed");
-    let compile_time = pat!("A? ?B");
+    let compile_time = pat!("48 8B ? ? ? ? 48 89");
     assert_eq!(compile_time, runtime.as_slice());
 }
 

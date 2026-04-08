@@ -213,16 +213,7 @@ impl<'a> Parser<'a> {
             match ch {
                 ' ' | '\n' | '\r' | '\t' => {}
                 '?' => {
-                    if let Some((_, lo_ch)) = self.peek()
-                        && lo_ch.is_ascii_hexdigit()
-                    {
-                        self.bump();
-                        let lo = hex_value(lo_ch).expect("ascii hex already validated");
-                        result.push(Atom::Fuzzy(0x0f));
-                        result.push(Atom::Byte(lo));
-                    } else {
-                        push_skip(&mut result, 1);
-                    }
+                    push_skip(&mut result, 1);
                 }
                 '[' => self.parse_skip_operand(position, &mut result)?,
                 '\'' => {
@@ -368,12 +359,6 @@ impl<'a> Parser<'a> {
                         kind: PatError::UnpairedHexDigit,
                         position,
                     })?;
-                    if lo_ch == '?' {
-                        let hi = hex_value(ch).expect("ascii hex already validated");
-                        result.push(Atom::Fuzzy(0xf0));
-                        result.push(Atom::Byte(hi << 4));
-                        continue;
-                    }
                     if !lo_ch.is_ascii_hexdigit() {
                         return Err(ParsePatError {
                             kind: PatError::UnpairedHexDigit,
@@ -752,19 +737,28 @@ mod tests {
     }
 
     #[test]
-    fn supports_nibble_bitmask_syntax() {
+    fn wildcard_semantics_match_pelite() {
         assert_eq!(
-            parse("A? ?B"),
-            Ok(vec![
-                Atom::Save(0),
-                Atom::Fuzzy(0xf0),
-                Atom::Byte(0xa0),
-                Atom::Fuzzy(0x0f),
-                Atom::Byte(0x0b),
-            ])
+            parse("A?") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::UnpairedHexDigit,
+                position: 1,
+            })
         );
 
+        assert_eq!(parse("?"), Ok(vec![Atom::Save(0)]));
         assert_eq!(parse("??"), Ok(vec![Atom::Save(0)]));
+
+        assert_eq!(
+            parse("4183?03"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Byte(0x41),
+                Atom::Byte(0x83),
+                Atom::Skip(1),
+                Atom::Byte(0x03),
+            ])
+        );
     }
 
     #[test]
