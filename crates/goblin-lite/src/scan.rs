@@ -5,6 +5,7 @@ use crate::pattern::{save_len, Atom};
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
 const PREFIX_BUF_LEN: usize = 16;
+const ANCHOR_MAX_LEN: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeSpan {
@@ -68,6 +69,95 @@ pub trait BinaryView {
     }
 }
 
+struct ExecReader<'a, B: BinaryView> {
+    view: &'a B,
+    span_index: Option<usize>,
+}
+
+impl<'a, B: BinaryView> ExecReader<'a, B> {
+    fn new(view: &'a B, start: Offset) -> Self {
+        let mut reader = Self {
+            view,
+            span_index: None,
+        };
+        reader.span_index = reader.find_span(start);
+        reader
+    }
+
+    #[inline]
+    fn read_u8(&mut self, offset: Offset) -> Option<u8> {
+        let Some(file_offset) = self.span_file_offset(offset) else {
+            return self.view.read_u8(offset);
+        };
+        self.view
+            .image()
+            .get(file_offset)
+            .copied()
+            .or_else(|| self.view.read_u8(offset))
+    }
+
+    #[inline]
+    fn read_i16(&mut self, offset: Offset) -> Option<i16> {
+        Some(i16::from_le_bytes(self.read_array::<2>(offset)?))
+    }
+
+    #[inline]
+    fn read_u16(&mut self, offset: Offset) -> Option<u16> {
+        Some(u16::from_le_bytes(self.read_array::<2>(offset)?))
+    }
+
+    #[inline]
+    fn read_i32(&mut self, offset: Offset) -> Option<i32> {
+        Some(i32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    #[inline]
+    fn read_u32(&mut self, offset: Offset) -> Option<u32> {
+        Some(u32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    fn read_array<const N: usize>(&mut self, offset: Offset) -> Option<[u8; N]> {
+        if let Some(file_offset) = self.span_file_offset(offset)
+            && let Some(end) = file_offset.checked_add(N)
+            && let Some(bytes) = self.view.image().get(file_offset..end)
+        {
+            let mut out = [0u8; N];
+            out.copy_from_slice(bytes);
+            return Some(out);
+        }
+
+        self.view.read_array::<N>(offset)
+    }
+
+    fn span_file_offset(&mut self, offset: Offset) -> Option<usize> {
+        let index = self.find_span(offset)?;
+        let span = self.view.code_spans().get(index)?;
+        let delta = offset.checked_sub(span.mapped.start)?;
+        let delta_usize = usize::try_from(delta).ok()?;
+        span.file.start.checked_add(delta_usize)
+    }
+
+    fn find_span(&mut self, offset: Offset) -> Option<usize> {
+        if let Some(index) = self.span_index
+            && self
+                .view
+                .code_spans()
+                .get(index)
+                .is_some_and(|span| span.mapped.contains(&offset))
+        {
+            return Some(index);
+        }
+
+        let index = self
+            .view
+            .code_spans()
+            .iter()
+            .position(|span| span.mapped.contains(&offset))?;
+        self.span_index = Some(index);
+        Some(index)
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 /// Pattern scanner over a [`BinaryView`].
 pub struct Scanner<'a, B: BinaryView> {
@@ -98,13 +188,15 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     /// Returns an iterator-like matcher for all code-range matches.
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
         let (prefix, prefix_len) = build_prefix(pat);
+        let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
         Matches {
             scanner: Scanner { view: self.view },
             pat,
             range_index: 0,
             cursor: None,
-            prefix,
-            prefix_len,
+            anchor,
+            anchor_len,
+            anchor_offset,
         }
     }
 
@@ -158,6 +250,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let mut cursor = state.cursor;
             let mut pc = state.pc;
             let mut fuzzy = state.fuzzy;
+            let mut reader = ExecReader::new(self.view, cursor);
             loop {
                 let Some(atom) = pat.get(pc) else {
                     for (dst, src) in save.iter_mut().zip(work_save.iter()) {
@@ -168,7 +261,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
                 match *atom {
                     Atom::Byte(expected) => {
-                        let Some(actual) = self.view.read_u8(cursor) else {
+                        let Some(actual) = reader.read_u8(cursor) else {
                             break;
                         };
                         let mask = fuzzy.take().unwrap_or(u8::MAX);
@@ -242,7 +335,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Jump1 => {
-                        let Some(byte) = self.view.read_u8(cursor) else {
+                        let Some(byte) = reader.read_u8(cursor) else {
                             break;
                         };
                         let disp = byte as i8;
@@ -264,7 +357,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Jump4 => {
-                        let Some(disp) = self.view.read_i32(cursor) else {
+                        let Some(disp) = reader.read_i32(cursor) else {
                             break;
                         };
                         let Some(base) = cursor.checked_add(4) else {
@@ -285,7 +378,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadI8(slot) => {
-                        let Some(value) = self.view.read_u8(cursor) else {
+                        let Some(value) = reader.read_u8(cursor) else {
                             break;
                         };
                         assign_save(
@@ -301,7 +394,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadU8(slot) => {
-                        let Some(value) = self.view.read_u8(cursor) else {
+                        let Some(value) = reader.read_u8(cursor) else {
                             break;
                         };
                         assign_save(
@@ -317,7 +410,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadI16(slot) => {
-                        let Some(value) = self.view.read_i16(cursor) else {
+                        let Some(value) = reader.read_i16(cursor) else {
                             break;
                         };
                         assign_save(
@@ -333,7 +426,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadU16(slot) => {
-                        let Some(value) = self.view.read_u16(cursor) else {
+                        let Some(value) = reader.read_u16(cursor) else {
                             break;
                         };
                         assign_save(
@@ -349,7 +442,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadI32(slot) => {
-                        let Some(value) = self.view.read_i32(cursor) else {
+                        let Some(value) = reader.read_i32(cursor) else {
                             break;
                         };
                         assign_save(
@@ -365,7 +458,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::ReadU32(slot) => {
-                        let Some(value) = self.view.read_u32(cursor) else {
+                        let Some(value) = reader.read_u32(cursor) else {
                             break;
                         };
                         assign_save(
@@ -452,8 +545,9 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     pat: &'p [Atom],
     range_index: usize,
     cursor: Option<Offset>,
-    prefix: [u8; PREFIX_BUF_LEN],
-    prefix_len: usize,
+    anchor: [u8; ANCHOR_MAX_LEN],
+    anchor_len: usize,
+    anchor_offset: u64,
 }
 
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
@@ -466,9 +560,9 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 self.cursor = None;
                 continue;
             }
-            let matched_at = if self.prefix_len == 0 {
+            let matched_at = if self.anchor_len == 0 {
                 self.scan_range_linear(span.mapped.clone(), start, save)
-            } else if self.prefix_len < 4 {
+            } else if self.anchor_len < 4 {
                 self.scan_span_first_byte(span, start, save)
             } else {
                 self.scan_span_quick(span, start, save)
@@ -511,7 +605,10 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         let Some(bytes) = self.scanner.view.image().get(span.file.clone()) else {
             return self.scan_range_first_byte(span.mapped.clone(), start, save);
         };
-        let Some(start_file) = mapped_to_file_offset(span, start) else {
+        let Some(anchor_start) = start.checked_add(self.anchor_offset) else {
+            return self.scan_range_first_byte(span.mapped.clone(), start, save);
+        };
+        let Some(start_file) = mapped_to_file_offset(span, anchor_start) else {
             return self.scan_range_first_byte(span.mapped.clone(), start, save);
         };
         let Some(start_index) = start_file.checked_sub(span.file.start) else {
@@ -527,15 +624,21 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         let Some(haystack) = bytes.get(start_index..) else {
             return self.scan_range_first_byte(span.mapped.clone(), start, save);
         };
-        let needle = self.prefix[0];
+        let needle = self.anchor[0];
         for (delta, byte) in haystack.iter().copied().enumerate() {
             if byte != needle {
                 continue;
             }
-            let Some(mapped_delta) = Offset::try_from(start_index.checked_add(delta)?).ok() else {
+            let Some(anchor_index) = start_index.checked_add(delta) else {
                 return None;
             };
-            let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
+            let Some(mapped_delta) = Offset::try_from(anchor_index).ok() else {
+                return None;
+            };
+            let Some(anchor_cursor) = span.mapped.start.checked_add(mapped_delta) else {
+                return None;
+            };
+            let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
                 return None;
             };
             if self.scanner.exec(cursor, self.pat, save) {
@@ -551,15 +654,18 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         mut cursor: Offset,
         save: &mut [Offset],
     ) -> Option<Offset> {
-        let needle = self.prefix[0];
-        while cursor < range.end {
-            if self.scanner.view.read_u8(cursor) == Some(needle)
+        let needle = self.anchor[0];
+        let Some(mut probe) = cursor.checked_add(self.anchor_offset) else {
+            return None;
+        };
+        while probe < range.end {
+            if self.scanner.view.read_u8(probe) == Some(needle)
                 && self.scanner.exec(cursor, self.pat, save)
             {
                 return Some(cursor);
             }
-            let next = cursor.checked_add(1)?;
-            cursor = next;
+            cursor = cursor.checked_add(1)?;
+            probe = probe.checked_add(1)?;
         }
         None
     }
@@ -570,8 +676,9 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         start: Offset,
         save: &mut [Offset],
     ) -> Option<Offset> {
-        let prefix = &self.prefix[..self.prefix_len];
-        let window = u64::try_from(self.prefix_len).ok()?;
+        let prefix = &self.anchor[..self.anchor_len];
+        let window = u64::try_from(self.anchor_len).ok()?;
+        let start = start.checked_add(self.anchor_offset)?;
         if start >= range.end {
             return None;
         }
@@ -580,16 +687,16 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             return None;
         }
 
-        let mut jumps = [self.prefix_len as u8; 256];
+        let mut jumps = [self.anchor_len as u8; 256];
         for (index, byte) in prefix
             .iter()
-            .take(self.prefix_len.saturating_sub(1))
+            .take(self.anchor_len.saturating_sub(1))
             .enumerate()
         {
-            jumps[usize::from(*byte)] = (self.prefix_len - index - 1) as u8;
+            jumps[usize::from(*byte)] = (self.anchor_len - index - 1) as u8;
         }
 
-        let last = prefix[self.prefix_len - 1];
+        let last = prefix[self.anchor_len - 1];
         let mut index = 0u64;
         let max_index = total - window;
         while index <= max_index {
@@ -603,9 +710,11 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let jump = u64::from(jumps[usize::from(probe)].max(1));
             if probe == last
                 && self.prefix_matches_mapped(cursor)
-                && self.scanner.exec(cursor, self.pat, save)
+                && self
+                    .scanner
+                    .exec(cursor.checked_sub(self.anchor_offset)?, self.pat, save)
             {
-                return Some(cursor);
+                return cursor.checked_sub(self.anchor_offset);
             }
             index = index.checked_add(jump)?;
         }
@@ -622,40 +731,43 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         let Some(bytes) = self.scanner.view.image().get(span.file.clone()) else {
             return self.scan_range_quick(span.mapped.clone(), start, save);
         };
-        let Some(start_file) = mapped_to_file_offset(span, start) else {
+        let Some(anchor_start) = start.checked_add(self.anchor_offset) else {
+            return self.scan_range_quick(span.mapped.clone(), start, save);
+        };
+        let Some(start_file) = mapped_to_file_offset(span, anchor_start) else {
             return self.scan_range_quick(span.mapped.clone(), start, save);
         };
         let Some(start_index) = start_file.checked_sub(span.file.start) else {
             return self.scan_range_quick(span.mapped.clone(), start, save);
         };
 
-        let prefix = &self.prefix[..self.prefix_len];
+        let prefix = &self.anchor[..self.anchor_len];
         let Some(haystack) = bytes.get(start_index..) else {
             return self.scan_range_quick(span.mapped.clone(), start, save);
         };
-        if haystack.len() < self.prefix_len {
+        if haystack.len() < self.anchor_len {
             return None;
         }
 
-        let mut jumps = [self.prefix_len as u8; 256];
+        let mut jumps = [self.anchor_len as u8; 256];
         for (index, byte) in prefix
             .iter()
-            .take(self.prefix_len.saturating_sub(1))
+            .take(self.anchor_len.saturating_sub(1))
             .enumerate()
         {
-            jumps[usize::from(*byte)] = (self.prefix_len - index - 1) as u8;
+            jumps[usize::from(*byte)] = (self.anchor_len - index - 1) as u8;
         }
 
-        let last = prefix[self.prefix_len - 1];
+        let last = prefix[self.anchor_len - 1];
         let mut index = 0usize;
-        let max_index = haystack.len() - self.prefix_len;
+        let max_index = haystack.len() - self.anchor_len;
         while index <= max_index {
-            let probe = haystack[index + self.prefix_len - 1];
+            let probe = haystack[index + self.anchor_len - 1];
 
             let jump = usize::from(jumps[usize::from(probe)].max(1));
             if probe == last
                 && haystack
-                    .get(index..index + self.prefix_len)
+                    .get(index..index + self.anchor_len)
                     .is_some_and(|window| window == prefix)
             {
                 let Some(total_index) = start_index.checked_add(index) else {
@@ -667,8 +779,11 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
                     return None;
                 };
-                if self.scanner.exec(cursor, self.pat, save) {
-                    return Some(cursor);
+                let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
+                    return None;
+                };
+                if self.scanner.exec(start_cursor, self.pat, save) {
+                    return Some(start_cursor);
                 }
             }
             index = index.checked_add(jump)?;
@@ -678,7 +793,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn prefix_matches_mapped(&self, cursor: Offset) -> bool {
-        for (index, expected) in self.prefix[..self.prefix_len].iter().enumerate() {
+        for (index, expected) in self.anchor[..self.anchor_len].iter().enumerate() {
             let delta = index as u64;
             let Some(offset) = cursor.checked_add(delta) else {
                 return false;
@@ -708,6 +823,23 @@ fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
         }
     }
     (prefix, len)
+}
+
+fn select_anchor(
+    prefix: &[u8; PREFIX_BUF_LEN],
+    prefix_len: usize,
+) -> ([u8; ANCHOR_MAX_LEN], usize, u64) {
+    let mut anchor = [0u8; ANCHOR_MAX_LEN];
+    if prefix_len == 0 {
+        return (anchor, 0, 0);
+    }
+
+    let anchor_len = prefix_len.min(ANCHOR_MAX_LEN);
+    let start = prefix_len - anchor_len;
+    for (index, byte) in prefix[start..prefix_len].iter().copied().enumerate() {
+        anchor[index] = byte;
+    }
+    (anchor, anchor_len, start as u64)
 }
 
 fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
