@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{save_len, Atom};
+use crate::pattern::{Atom, save_len};
 use memchr::memchr_iter;
 
 pub type Offset = u64;
@@ -1259,8 +1259,8 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_prefix, is_linear_pattern, is_tiny_literal_jump_pattern, span_index_for_offset,
-        BinaryView, CodeSpan, Offset, Scanner,
+        BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern,
+        is_tiny_literal_jump_pattern, span_index_for_offset,
     };
     use crate::pattern::Atom;
 
