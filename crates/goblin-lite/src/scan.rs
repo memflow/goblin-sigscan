@@ -189,7 +189,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             scanner: Scanner { view: self.view },
             pat,
             linear_exec,
-            tiny_literal_jump_exec: false,
             range_index: 0,
             cursor: None,
             anchor,
@@ -198,117 +197,11 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         }
     }
 
-    fn exec(
-        &self,
-        start: Offset,
-        pat: &[Atom],
-        save: &mut [Offset],
-        linear_exec: bool,
-        tiny_literal_jump_exec: bool,
-    ) -> bool {
-        if tiny_literal_jump_exec {
-            return self.exec_tiny_literal_jump(start, pat, save);
-        }
+    fn exec(&self, start: Offset, pat: &[Atom], save: &mut [Offset], linear_exec: bool) -> bool {
         if linear_exec {
             return self.exec_linear(start, pat, save);
         }
         self.exec_backtracking(start, pat, save)
-    }
-
-    fn exec_tiny_literal_jump(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
-        let mut work_save = save.to_vec();
-        let mut cursor = start;
-        let mut pc = 0usize;
-        let mut reader = ExecReader::new(self.view, cursor);
-
-        loop {
-            let Some(atom) = pat.get(pc) else {
-                for (dst, src) in save.iter_mut().zip(work_save.iter()) {
-                    *dst = *src;
-                }
-                return true;
-            };
-
-            match *atom {
-                Atom::Byte(expected) => {
-                    if reader.read_u8(cursor) != Some(expected) {
-                        return false;
-                    }
-                    cursor = match cursor.checked_add(1) {
-                        Some(next) => next,
-                        None => return false,
-                    };
-                    pc += 1;
-                }
-                Atom::Save(slot) => {
-                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
-                        *dst = cursor;
-                    }
-                    pc += 1;
-                }
-                Atom::Skip(n) => {
-                    cursor = match cursor.checked_add(u64::from(n)) {
-                        Some(next) => next,
-                        None => return false,
-                    };
-                    pc += 1;
-                }
-                Atom::Jump1 => {
-                    let Some(byte) = reader.read_u8(cursor) else {
-                        return false;
-                    };
-                    let base = match cursor.checked_add(1) {
-                        Some(next) => next,
-                        None => return false,
-                    };
-                    let delta = i64::from(byte as i8);
-                    cursor = if delta >= 0 {
-                        match base.checked_add(delta as u64) {
-                            Some(next) => next,
-                            None => return false,
-                        }
-                    } else {
-                        match base.checked_sub((-delta) as u64) {
-                            Some(next) => next,
-                            None => return false,
-                        }
-                    };
-                    pc += 1;
-                }
-                Atom::Jump4 => {
-                    let Some(disp) = reader.read_i32(cursor) else {
-                        return false;
-                    };
-                    let base = match cursor.checked_add(4) {
-                        Some(next) => next,
-                        None => return false,
-                    };
-                    let delta = i64::from(disp);
-                    cursor = if delta >= 0 {
-                        match base.checked_add(delta as u64) {
-                            Some(next) => next,
-                            None => return false,
-                        }
-                    } else {
-                        match base.checked_sub((-delta) as u64) {
-                            Some(next) => next,
-                            None => return false,
-                        }
-                    };
-                    pc += 1;
-                }
-                Atom::Nop => {
-                    pc += 1;
-                }
-                _ => {
-                    debug_assert!(
-                        false,
-                        "tiny literal-jump exec must only run for byte/save/skip/jump/nop patterns"
-                    );
-                    return false;
-                }
-            }
-        }
     }
 
     fn exec_linear(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
@@ -869,7 +762,6 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     scanner: Scanner<'a, B>,
     pat: &'p [Atom],
     linear_exec: bool,
-    tiny_literal_jump_exec: bool,
     range_index: usize,
     cursor: Option<Offset>,
     anchor: [u8; ANCHOR_MAX_LEN],
@@ -914,13 +806,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         save: &mut [Offset],
     ) -> Option<Offset> {
         while cursor < range.end {
-            if self.scanner.exec(
-                cursor,
-                self.pat,
-                save,
-                self.linear_exec,
-                self.tiny_literal_jump_exec,
-            ) {
+            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
                 return Some(cursor);
             }
             let next = cursor.checked_add(1)?;
@@ -979,13 +865,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
                 return None;
             };
-            if self.scanner.exec(
-                cursor,
-                self.pat,
-                save,
-                self.linear_exec,
-                self.tiny_literal_jump_exec,
-            ) {
+            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
                 return Some(cursor);
             }
         }
@@ -1004,13 +884,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         };
         while probe < range.end {
             if self.scanner.view.read_u8(probe) == Some(needle)
-                && self.scanner.exec(
-                    cursor,
-                    self.pat,
-                    save,
-                    self.linear_exec,
-                    self.tiny_literal_jump_exec,
-                )
+                && self.scanner.exec(cursor, self.pat, save, self.linear_exec)
             {
                 return Some(cursor);
             }
@@ -1065,7 +939,6 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                     self.pat,
                     save,
                     self.linear_exec,
-                    self.tiny_literal_jump_exec,
                 )
             {
                 return cursor.checked_sub(self.anchor_offset);
@@ -1136,13 +1009,10 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
                     return None;
                 };
-                if self.scanner.exec(
-                    start_cursor,
-                    self.pat,
-                    save,
-                    self.linear_exec,
-                    self.tiny_literal_jump_exec,
-                ) {
+                if self
+                    .scanner
+                    .exec(start_cursor, self.pat, save, self.linear_exec)
+                {
                     return Some(start_cursor);
                 }
             }
