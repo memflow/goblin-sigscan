@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use goblin_lite::pattern::Atom;
-use goblin_lite::{MappedAddressView, elf::ElfFile, mach::MachFile, pe64::PeFile};
+use goblin_lite::{elf::ElfFile, mach::MachFile, pe64::PeFile, MappedAddressView};
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";
@@ -209,6 +209,132 @@ fn mach_addressing_helpers_roundtrip_and_read() {
 
     assert!(file.deref_copy_vmaddr::<u32>(u64::MAX).is_none());
     assert!(file.deref_c_str_vmaddr(u64::MAX).is_none());
+}
+
+#[test]
+fn pe64_section_lookup_cache_handles_section_switches() {
+    let bytes = fixture_bytes(PE64_FIXTURE);
+    let file = PeFile::from_bytes(&bytes).expect("PE64 fixture should parse as PE64");
+
+    let mut mapped = file
+        .pe()
+        .sections
+        .iter()
+        .filter_map(|section| {
+            if section.size_of_raw_data == 0 {
+                return None;
+            }
+            Some(u64::from(section.virtual_address))
+        })
+        .take(2);
+    let first = mapped
+        .next()
+        .expect("fixture should expose at least one mapped PE section");
+    let second = mapped
+        .next()
+        .expect("fixture should expose at least two mapped PE sections");
+
+    let first_offset = file
+        .rva_to_file_offset(first)
+        .expect("first section RVA should map to file offset");
+    let second_offset = file
+        .rva_to_file_offset(second)
+        .expect("second section RVA should map to file offset");
+
+    assert_eq!(file.rva_to_file_offset(first), Some(first_offset));
+    assert_eq!(file.rva_to_file_offset(second), Some(second_offset));
+    assert_eq!(file.rva_to_file_offset(first), Some(first_offset));
+}
+
+#[test]
+fn elf_load_lookup_cache_handles_segment_switches() {
+    let bytes = fixture_bytes(ELF64_FIXTURE);
+    let file = ElfFile::from_bytes(&bytes).expect("ELF fixture should parse");
+
+    let mut mapped = file
+        .elf()
+        .program_headers
+        .iter()
+        .filter_map(|ph| {
+            if ph.p_type != goblin::elf::program_header::PT_LOAD || ph.p_filesz == 0 {
+                return None;
+            }
+            Some(ph.p_vaddr)
+        })
+        .take(2);
+    let first = mapped
+        .next()
+        .expect("fixture should expose at least one load segment");
+    let second = mapped
+        .next()
+        .expect("fixture should expose at least two load segments");
+
+    let first_offset = file
+        .vaddr_to_file_offset(first)
+        .expect("first segment vaddr should map to file offset");
+    let second_offset = file
+        .vaddr_to_file_offset(second)
+        .expect("second segment vaddr should map to file offset");
+
+    assert_eq!(file.vaddr_to_file_offset(first), Some(first_offset));
+    assert_eq!(file.vaddr_to_file_offset(second), Some(second_offset));
+    assert_eq!(file.vaddr_to_file_offset(first), Some(first_offset));
+}
+
+#[test]
+fn mach_load_lookup_cache_handles_segment_switches() {
+    let bytes = fixture_bytes(MACH_FIXTURE);
+    let file = MachFile::from_bytes(&bytes).expect("Mach-O fixture should parse");
+
+    let mut mapped = Vec::new();
+    match file.mach() {
+        goblin::mach::Mach::Binary(binary) => {
+            for segment in binary.segments.iter() {
+                if segment.filesize != 0 {
+                    mapped.push(segment.vmaddr);
+                }
+                if mapped.len() >= 2 {
+                    break;
+                }
+            }
+        }
+        goblin::mach::Mach::Fat(fat) => {
+            for index in 0..fat.narches {
+                let arch = fat
+                    .get(index)
+                    .expect("fixture fat entry should decode cleanly");
+                if let goblin::mach::SingleArch::MachO(binary) = arch {
+                    for segment in binary.segments.iter() {
+                        if segment.filesize != 0 {
+                            mapped.push(segment.vmaddr);
+                        }
+                        if mapped.len() >= 2 {
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(
+        mapped.len() >= 2,
+        "fixture should expose at least two mapped Mach segments"
+    );
+    let first = mapped[0];
+    let second = mapped[1];
+
+    let first_offset = file
+        .vmaddr_to_file_offset(first)
+        .expect("first segment vmaddr should map to file offset");
+    let second_offset = file
+        .vmaddr_to_file_offset(second)
+        .expect("second segment vmaddr should map to file offset");
+
+    assert_eq!(file.vmaddr_to_file_offset(first), Some(first_offset));
+    assert_eq!(file.vmaddr_to_file_offset(second), Some(second_offset));
+    assert_eq!(file.vmaddr_to_file_offset(first), Some(first_offset));
 }
 
 /// The scanner finds a known 8-byte function prologue in the ELF .text segment.

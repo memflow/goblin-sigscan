@@ -1,12 +1,12 @@
-use std::{ffi::CStr, ops::Range};
+use std::{cell::Cell, ffi::CStr, ops::Range};
 
-use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
+use goblin::mach::{constants::VM_PROT_EXECUTE, Mach, SingleArch};
 use thiserror::Error;
 
 use crate::{
-    Pod, Ptr, TypedView,
     address::MappedAddressView,
     scan::{BinaryView, Offset, Scanner},
+    Pod, Ptr, TypedView,
 };
 
 /// Error type returned by Mach-O wrapper APIs.
@@ -30,6 +30,7 @@ pub struct MachFile<'a> {
     mach: Mach<'a>,
     code_ranges: Vec<Range<Offset>>,
     load_ranges: Vec<LoadRange>,
+    load_lookup_cache: Cell<Option<usize>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +92,7 @@ impl<'a> MachFile<'a> {
             mach,
             code_ranges,
             load_ranges,
+            load_lookup_cache: Cell::new(None),
         })
     }
 
@@ -266,14 +268,32 @@ impl<'a> MachFile<'a> {
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
-        let mapped = self.load_ranges.iter().find_map(|range| {
-            let delta = offset.checked_sub(range.virt_start)?;
-            if offset >= range.virt_end {
-                return None;
+        if let Some(index) = self.load_lookup_cache.get()
+            && let Some(mapped) = self.lookup_mapped_file_offset(index, offset)
+        {
+            return usize::try_from(mapped).ok();
+        }
+
+        let mut mapped = None;
+        for (index, _) in self.load_ranges.iter().enumerate() {
+            if let Some(value) = self.lookup_mapped_file_offset(index, offset) {
+                self.load_lookup_cache.set(Some(index));
+                mapped = Some(value);
+                break;
             }
-            range.file_start.checked_add(delta)
-        })?;
+        }
+
+        let mapped = mapped?;
         usize::try_from(mapped).ok()
+    }
+
+    fn lookup_mapped_file_offset(&self, index: usize, offset: Offset) -> Option<Offset> {
+        let range = self.load_ranges.get(index)?;
+        let delta = offset.checked_sub(range.virt_start)?;
+        if offset >= range.virt_end {
+            return None;
+        }
+        range.file_start.checked_add(delta)
     }
 }
 

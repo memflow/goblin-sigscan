@@ -1,15 +1,15 @@
-use std::{ffi::CStr, ops::Range};
+use std::{cell::Cell, ffi::CStr, ops::Range};
 
 use goblin::pe::{
-    PE,
     section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
+    PE,
 };
 use thiserror::Error;
 
 use crate::{
-    Pod, Ptr, TypedView,
     address::MappedAddressView,
     scan::{BinaryView, Offset, Scanner},
+    Pod, Ptr, TypedView,
 };
 
 /// Error type returned by PE wrapper APIs.
@@ -30,6 +30,7 @@ pub struct PeFile<'a> {
     bytes: &'a [u8],
     pe: PE<'a>,
     code_ranges: Vec<Range<Offset>>,
+    section_lookup_cache: Cell<Option<usize>>,
 }
 
 impl<'a> PeFile<'a> {
@@ -76,6 +77,7 @@ impl<'a> PeFile<'a> {
             bytes,
             pe,
             code_ranges,
+            section_lookup_cache: Cell::new(None),
         })
     }
 
@@ -285,16 +287,20 @@ impl<'a> PeFile<'a> {
             return usize::try_from(rva).ok();
         }
 
-        self.pe.sections.iter().find_map(|section| {
-            let section_rva = u64::from(section.virtual_address);
-            let delta = rva.checked_sub(section_rva)?;
-            if delta >= u64::from(section.size_of_raw_data) {
-                return None;
+        if let Some(index) = self.section_lookup_cache.get()
+            && let Some(file_offset) = self.section_file_offset(index, rva)
+        {
+            return Some(file_offset);
+        }
+
+        for (index, _) in self.pe.sections.iter().enumerate() {
+            if let Some(file_offset) = self.section_file_offset(index, rva) {
+                self.section_lookup_cache.set(Some(index));
+                return Some(file_offset);
             }
-            let raw_start = usize::try_from(section.pointer_to_raw_data).ok()?;
-            let delta_usize = usize::try_from(delta).ok()?;
-            raw_start.checked_add(delta_usize)
-        })
+        }
+
+        None
     }
 
     /// Converts a file offset into an RVA.
@@ -338,6 +344,18 @@ impl<'a> PeFile<'a> {
             let section_rva = Offset::from(section.virtual_address);
             section_rva.checked_add(Offset::try_from(delta).ok()?)
         })
+    }
+
+    fn section_file_offset(&self, index: usize, rva: Offset) -> Option<usize> {
+        let section = self.pe.sections.get(index)?;
+        let section_rva = u64::from(section.virtual_address);
+        let delta = rva.checked_sub(section_rva)?;
+        if delta >= u64::from(section.size_of_raw_data) {
+            return None;
+        }
+        let raw_start = usize::try_from(section.pointer_to_raw_data).ok()?;
+        let delta_usize = usize::try_from(delta).ok()?;
+        raw_start.checked_add(delta_usize)
     }
 }
 
