@@ -1,9 +1,10 @@
 use std::ops::Range;
 
-use crate::pattern::{Atom, save_len};
+use crate::pattern::{save_len, Atom};
 
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
+const PREFIX_BUF_LEN: usize = 16;
 
 /// Read-only view over a mapped binary image for scanner execution.
 pub trait BinaryView {
@@ -44,11 +45,14 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
     /// Returns an iterator-like matcher for all code-range matches.
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
+        let (prefix, prefix_len) = build_prefix(pat);
         Matches {
             scanner: Scanner { view: self.view },
             pat,
             range_index: 0,
             cursor: None,
+            prefix,
+            prefix_len,
         }
     }
 
@@ -345,22 +349,26 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     pat: &'p [Atom],
     range_index: usize,
     cursor: Option<Offset>,
+    prefix: [u8; PREFIX_BUF_LEN],
+    prefix_len: usize,
 }
 
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     /// Advances to the next match and writes save-slot values into `save`.
     pub fn next(&mut self, save: &mut [Offset]) -> bool {
         while let Some(range) = self.scanner.view.code_ranges().get(self.range_index) {
-            let mut cursor = self.cursor.unwrap_or(range.start);
-            while cursor < range.end {
-                if self.scanner.exec(cursor, self.pat, save) {
-                    self.cursor = cursor.checked_add(1);
-                    return true;
-                }
-                let Some(next) = cursor.checked_add(1) else {
-                    break;
-                };
-                cursor = next;
+            let start = self.cursor.unwrap_or(range.start);
+            let matched_at = if self.prefix_len == 0 {
+                self.scan_range_linear(range.clone(), start, save)
+            } else if self.prefix_len < 4 {
+                self.scan_range_first_byte(range.clone(), start, save)
+            } else {
+                self.scan_range_quick(range.clone(), start, save)
+            };
+
+            if let Some(cursor) = matched_at {
+                self.cursor = cursor.checked_add(1);
+                return true;
             }
 
             self.range_index += 1;
@@ -369,13 +377,129 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
 
         false
     }
+
+    fn scan_range_linear(
+        &self,
+        range: Range<Offset>,
+        mut cursor: Offset,
+        save: &mut [Offset],
+    ) -> Option<Offset> {
+        while cursor < range.end {
+            if self.scanner.exec(cursor, self.pat, save) {
+                return Some(cursor);
+            }
+            let next = cursor.checked_add(1)?;
+            cursor = next;
+        }
+        None
+    }
+
+    fn scan_range_first_byte(
+        &self,
+        range: Range<Offset>,
+        mut cursor: Offset,
+        save: &mut [Offset],
+    ) -> Option<Offset> {
+        let needle = self.prefix[0];
+        while cursor < range.end {
+            if self.scanner.view.read_u8(cursor) == Some(needle)
+                && self.scanner.exec(cursor, self.pat, save)
+            {
+                return Some(cursor);
+            }
+            let next = cursor.checked_add(1)?;
+            cursor = next;
+        }
+        None
+    }
+
+    fn scan_range_quick(
+        &self,
+        range: Range<Offset>,
+        start: Offset,
+        save: &mut [Offset],
+    ) -> Option<Offset> {
+        let prefix = &self.prefix[..self.prefix_len];
+        let window = u64::try_from(self.prefix_len).ok()?;
+        if start >= range.end {
+            return None;
+        }
+        let total = range.end.checked_sub(start)?;
+        if total < window {
+            return None;
+        }
+
+        let mut jumps = [self.prefix_len as u8; 256];
+        for (index, byte) in prefix
+            .iter()
+            .take(self.prefix_len.saturating_sub(1))
+            .enumerate()
+        {
+            jumps[usize::from(*byte)] = (self.prefix_len - index - 1) as u8;
+        }
+
+        let last = prefix[self.prefix_len - 1];
+        let mut index = 0u64;
+        let max_index = total - window;
+        while index <= max_index {
+            let cursor = start.checked_add(index)?;
+            let probe_at = cursor.checked_add(window - 1)?;
+            let Some(probe) = self.scanner.view.read_u8(probe_at) else {
+                index = index.checked_add(1)?;
+                continue;
+            };
+
+            let jump = u64::from(jumps[usize::from(probe)].max(1));
+            if probe == last
+                && self.prefix_matches(cursor)
+                && self.scanner.exec(cursor, self.pat, save)
+            {
+                return Some(cursor);
+            }
+            index = index.checked_add(jump)?;
+        }
+
+        None
+    }
+
+    fn prefix_matches(&self, cursor: Offset) -> bool {
+        for (index, expected) in self.prefix[..self.prefix_len].iter().enumerate() {
+            let delta = index as u64;
+            let Some(offset) = cursor.checked_add(delta) else {
+                return false;
+            };
+            if self.scanner.view.read_u8(offset) != Some(*expected) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
+    let mut prefix = [0u8; PREFIX_BUF_LEN];
+    let mut len = 0usize;
+    for atom in pat {
+        match *atom {
+            Atom::Byte(byte) => {
+                if len >= PREFIX_BUF_LEN {
+                    break;
+                }
+                prefix[len] = byte;
+                len += 1;
+            }
+            Atom::Save(_) | Atom::Aligned(_) | Atom::Nop => {}
+            _ => break,
+        }
+    }
+    (prefix, len)
 }
 
 #[cfg(test)]
 mod tests {
     use std::ops::Range;
 
-    use super::{BinaryView, Offset, Scanner};
+    use super::{build_prefix, BinaryView, Offset, Scanner};
     use crate::pattern::Atom;
 
     #[derive(Debug)]
@@ -496,5 +620,39 @@ mod tests {
         let mut save = [0u64; 2];
 
         assert!(!scanner.finds_code(&pat, &mut save));
+    }
+
+    #[test]
+    fn quick_prefix_strategy_finds_match_near_range_end() {
+        let view = TestView::new(&[0x00, 0x11, 0x22, 0x33, 0x44]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Byte(0x11),
+            Atom::Byte(0x22),
+            Atom::Byte(0x33),
+            Atom::Byte(0x44),
+        ];
+        let mut save = [0u64; 1];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 1);
+    }
+
+    #[test]
+    fn prefix_builder_keeps_optimizable_leading_atoms() {
+        let (prefix, len) = build_prefix(&[
+            Atom::Save(0),
+            Atom::Aligned(0),
+            Atom::Nop,
+            Atom::Byte(0xaa),
+            Atom::Save(1),
+            Atom::Byte(0xbb),
+            Atom::Check(1),
+            Atom::Byte(0xcc),
+        ]);
+
+        assert_eq!(len, 2);
+        assert_eq!(&prefix[..len], &[0xaa, 0xbb]);
     }
 }
