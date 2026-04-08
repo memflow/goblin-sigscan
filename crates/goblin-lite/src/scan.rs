@@ -27,9 +27,7 @@ pub trait BinaryView {
 
     #[inline]
     fn is_in_code(&self, mapped: Offset) -> bool {
-        self.code_spans()
-            .iter()
-            .any(|span| span.mapped.contains(&mapped))
+        span_index_for_offset(self.code_spans(), mapped).is_some()
     }
 
     #[inline]
@@ -149,28 +147,7 @@ impl<'a, B: BinaryView> ExecReader<'a, B> {
             return Some(index);
         }
 
-        let spans = self.view.code_spans();
-        let mut low = 0usize;
-        let mut high = spans.len();
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let span = &spans[mid];
-            if span.mapped.end <= offset {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-
-        let index = if let Some(span) = spans.get(low) {
-            if span.mapped.contains(&offset) {
-                Some(low)
-            } else {
-                None
-            }
-        } else {
-            None
-        }?;
+        let index = span_index_for_offset(self.view.code_spans(), offset)?;
         self.span_index = Some(index);
         Some(index)
     }
@@ -207,10 +184,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
         let (prefix, prefix_len) = build_prefix(pat);
         let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
+        let linear_exec = is_linear_pattern(pat);
         Matches {
             scanner: Scanner { view: self.view },
             pat,
-            linear_exec: is_linear_pattern(pat),
+            linear_exec,
+            tiny_literal_jump_exec: false,
             range_index: 0,
             cursor: None,
             anchor,
@@ -219,11 +198,117 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         }
     }
 
-    fn exec(&self, start: Offset, pat: &[Atom], save: &mut [Offset], linear_exec: bool) -> bool {
+    fn exec(
+        &self,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        tiny_literal_jump_exec: bool,
+    ) -> bool {
+        if tiny_literal_jump_exec {
+            return self.exec_tiny_literal_jump(start, pat, save);
+        }
         if linear_exec {
             return self.exec_linear(start, pat, save);
         }
         self.exec_backtracking(start, pat, save)
+    }
+
+    fn exec_tiny_literal_jump(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
+        let mut work_save = save.to_vec();
+        let mut cursor = start;
+        let mut pc = 0usize;
+        let mut reader = ExecReader::new(self.view, cursor);
+
+        loop {
+            let Some(atom) = pat.get(pc) else {
+                for (dst, src) in save.iter_mut().zip(work_save.iter()) {
+                    *dst = *src;
+                }
+                return true;
+            };
+
+            match *atom {
+                Atom::Byte(expected) => {
+                    if reader.read_u8(cursor) != Some(expected) {
+                        return false;
+                    }
+                    cursor = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Save(slot) => {
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = cursor;
+                    }
+                    pc += 1;
+                }
+                Atom::Skip(n) => {
+                    cursor = match cursor.checked_add(u64::from(n)) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Jump1 => {
+                    let Some(byte) = reader.read_u8(cursor) else {
+                        return false;
+                    };
+                    let base = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    let delta = i64::from(byte as i8);
+                    cursor = if delta >= 0 {
+                        match base.checked_add(delta as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    } else {
+                        match base.checked_sub((-delta) as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    };
+                    pc += 1;
+                }
+                Atom::Jump4 => {
+                    let Some(disp) = reader.read_i32(cursor) else {
+                        return false;
+                    };
+                    let base = match cursor.checked_add(4) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    let delta = i64::from(disp);
+                    cursor = if delta >= 0 {
+                        match base.checked_add(delta as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    } else {
+                        match base.checked_sub((-delta) as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    };
+                    pc += 1;
+                }
+                Atom::Nop => {
+                    pc += 1;
+                }
+                _ => {
+                    debug_assert!(
+                        false,
+                        "tiny literal-jump exec must only run for byte/save/skip/jump/nop patterns"
+                    );
+                    return false;
+                }
+            }
+        }
     }
 
     fn exec_linear(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
@@ -784,6 +869,7 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     scanner: Scanner<'a, B>,
     pat: &'p [Atom],
     linear_exec: bool,
+    tiny_literal_jump_exec: bool,
     range_index: usize,
     cursor: Option<Offset>,
     anchor: [u8; ANCHOR_MAX_LEN],
@@ -828,7 +914,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         save: &mut [Offset],
     ) -> Option<Offset> {
         while cursor < range.end {
-            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
+            if self.scanner.exec(
+                cursor,
+                self.pat,
+                save,
+                self.linear_exec,
+                self.tiny_literal_jump_exec,
+            ) {
                 return Some(cursor);
             }
             let next = cursor.checked_add(1)?;
@@ -887,7 +979,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
                 return None;
             };
-            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
+            if self.scanner.exec(
+                cursor,
+                self.pat,
+                save,
+                self.linear_exec,
+                self.tiny_literal_jump_exec,
+            ) {
                 return Some(cursor);
             }
         }
@@ -906,7 +1004,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         };
         while probe < range.end {
             if self.scanner.view.read_u8(probe) == Some(needle)
-                && self.scanner.exec(cursor, self.pat, save, self.linear_exec)
+                && self.scanner.exec(
+                    cursor,
+                    self.pat,
+                    save,
+                    self.linear_exec,
+                    self.tiny_literal_jump_exec,
+                )
             {
                 return Some(cursor);
             }
@@ -961,6 +1065,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                     self.pat,
                     save,
                     self.linear_exec,
+                    self.tiny_literal_jump_exec,
                 )
             {
                 return cursor.checked_sub(self.anchor_offset);
@@ -1031,10 +1136,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
                     return None;
                 };
-                if self
-                    .scanner
-                    .exec(start_cursor, self.pat, save, self.linear_exec)
-                {
+                if self.scanner.exec(
+                    start_cursor,
+                    self.pat,
+                    save,
+                    self.linear_exec,
+                    self.tiny_literal_jump_exec,
+                ) {
                     return Some(start_cursor);
                 }
             }
@@ -1103,6 +1211,42 @@ fn is_linear_pattern(pat: &[Atom]) -> bool {
     })
 }
 
+#[cfg(test)]
+fn is_tiny_literal_jump_pattern(pat: &[Atom]) -> bool {
+    let mut has_jump1 = false;
+    for atom in pat {
+        match atom {
+            Atom::Byte(_) | Atom::Save(_) | Atom::Skip(_) | Atom::Nop => {}
+            Atom::Jump1 => has_jump1 = true,
+            Atom::Jump4 => return false,
+            _ => return false,
+        }
+    }
+    has_jump1
+}
+
+fn span_index_for_offset(spans: &[CodeSpan], offset: Offset) -> Option<usize> {
+    let mut low = 0usize;
+    let mut high = spans.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let span = &spans[mid];
+        if span.mapped.end <= offset {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    spans.get(low).and_then(|span| {
+        if span.mapped.contains(&offset) {
+            Some(low)
+        } else {
+            None
+        }
+    })
+}
+
 fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
     let delta = mapped.checked_sub(span.mapped.start)?;
     if mapped >= span.mapped.end {
@@ -1114,7 +1258,10 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_prefix, is_linear_pattern, BinaryView, CodeSpan, Offset, Scanner};
+    use super::{
+        build_prefix, is_linear_pattern, is_tiny_literal_jump_pattern, span_index_for_offset,
+        BinaryView, CodeSpan, Offset, Scanner,
+    };
     use crate::pattern::Atom;
 
     #[derive(Debug)]
@@ -1316,5 +1463,61 @@ mod tests {
         assert!(!is_linear_pattern(&[Atom::Save(0), Atom::SkipRange(1, 3)]));
         assert!(!is_linear_pattern(&[Atom::Push(1), Atom::Pop]));
         assert!(!is_linear_pattern(&[Atom::Case(1), Atom::Break(0)]));
+    }
+
+    #[test]
+    fn tiny_literal_jump_selector_is_strict() {
+        assert!(is_tiny_literal_jump_pattern(&[
+            Atom::Save(0),
+            Atom::Byte(0x74),
+            Atom::Jump1,
+            Atom::Nop,
+        ]));
+        assert!(!is_tiny_literal_jump_pattern(&[
+            Atom::Save(0),
+            Atom::Byte(0xe8),
+            Atom::Jump4,
+            Atom::Nop,
+        ]));
+        assert!(!is_tiny_literal_jump_pattern(&[
+            Atom::Byte(0xe8),
+            Atom::Save(0)
+        ]));
+        assert!(!is_tiny_literal_jump_pattern(&[
+            Atom::Save(0),
+            Atom::Byte(0xe8),
+            Atom::SkipRange(1, 2),
+            Atom::Jump4,
+        ]));
+        assert!(!is_tiny_literal_jump_pattern(&[
+            Atom::Save(0),
+            Atom::Byte(0xe8),
+            Atom::ReadU32(1),
+            Atom::Jump4,
+        ]));
+    }
+
+    #[test]
+    fn span_index_binary_search_locates_offsets() {
+        let spans = vec![
+            CodeSpan {
+                mapped: 5..8,
+                file: 0..3,
+            },
+            CodeSpan {
+                mapped: 12..15,
+                file: 8..11,
+            },
+            CodeSpan {
+                mapped: 30..35,
+                file: 20..25,
+            },
+        ];
+
+        assert_eq!(span_index_for_offset(&spans, 5), Some(0));
+        assert_eq!(span_index_for_offset(&spans, 14), Some(1));
+        assert_eq!(span_index_for_offset(&spans, 34), Some(2));
+        assert_eq!(span_index_for_offset(&spans, 8), None);
+        assert_eq!(span_index_for_offset(&spans, 100), None);
     }
 }
