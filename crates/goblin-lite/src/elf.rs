@@ -1,15 +1,15 @@
 use std::{cell::Cell, ffi::CStr};
 
 use goblin::elf::{
-    program_header::{PF_X, PT_LOAD},
     Elf,
+    program_header::{PF_X, PT_LOAD},
 };
 use thiserror::Error;
 
 use crate::{
+    Pod, Ptr, TypedView,
     address::MappedAddressView,
     scan::{BinaryView, CodeSpan, Offset, Scanner},
-    Pod, Ptr, TypedView,
 };
 
 /// Error type returned by ELF wrapper APIs.

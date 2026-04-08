@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use goblin_lite::pattern::Atom;
-use goblin_lite::{elf::ElfFile, mach::MachFile, pe64::PeFile, MappedAddressView};
+use goblin_lite::{MappedAddressView, elf::ElfFile, mach::MachFile, pe64::PeFile};
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";

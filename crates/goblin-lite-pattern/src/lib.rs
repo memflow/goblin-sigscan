@@ -606,7 +606,7 @@ fn push_skip(result: &mut Vec<Atom>, mut remaining: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Atom, ParsePatError, PatError};
+    use super::{Atom, ParsePatError, PatError, parse};
 
     #[test]
     fn parses_used_subset() {

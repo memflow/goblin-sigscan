@@ -1,15 +1,15 @@
 use std::{cell::Cell, ffi::CStr};
 
 use goblin::pe::{
-    section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
     PE,
+    section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
 };
 use thiserror::Error;
 
 use crate::{
+    Pod, Ptr, TypedView,
     address::MappedAddressView,
     scan::{BinaryView, CodeSpan, Offset, Scanner},
-    Pod, Ptr, TypedView,
 };
 
 /// Error type returned by PE wrapper APIs.

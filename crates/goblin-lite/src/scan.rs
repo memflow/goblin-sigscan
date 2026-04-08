@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{save_len, Atom};
+use crate::pattern::{Atom, save_len};
 use memchr::memchr_iter;
 
 pub type Offset = u64;
@@ -193,6 +193,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         Matches {
             scanner: Scanner { view: self.view },
             pat,
+            linear_exec: is_linear_pattern(pat),
             range_index: 0,
             cursor: None,
             anchor,
@@ -201,7 +202,228 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         }
     }
 
-    fn exec(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
+    fn exec(&self, start: Offset, pat: &[Atom], save: &mut [Offset], linear_exec: bool) -> bool {
+        if linear_exec {
+            return self.exec_linear(start, pat, save);
+        }
+        self.exec_backtracking(start, pat, save)
+    }
+
+    fn exec_linear(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
+        let mut work_save = save.to_vec();
+        let mut cursor = start;
+        let mut pc = 0usize;
+        let mut fuzzy = None;
+        let mut reader = ExecReader::new(self.view, cursor);
+
+        loop {
+            let Some(atom) = pat.get(pc) else {
+                for (dst, src) in save.iter_mut().zip(work_save.iter()) {
+                    *dst = *src;
+                }
+                return true;
+            };
+
+            match *atom {
+                Atom::Byte(expected) => {
+                    let Some(actual) = reader.read_u8(cursor) else {
+                        return false;
+                    };
+                    let mask = fuzzy.take().unwrap_or(u8::MAX);
+                    if (actual & mask) != (expected & mask) {
+                        return false;
+                    }
+                    cursor = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Fuzzy(mask) => {
+                    fuzzy = Some(mask);
+                    pc += 1;
+                }
+                Atom::Save(slot) => {
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = cursor;
+                    }
+                    pc += 1;
+                }
+                Atom::Skip(n) => {
+                    cursor = match cursor.checked_add(u64::from(n)) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Jump1 => {
+                    let Some(byte) = reader.read_u8(cursor) else {
+                        return false;
+                    };
+                    let base = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    let delta = i64::from(byte as i8);
+                    cursor = if delta >= 0 {
+                        match base.checked_add(delta as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    } else {
+                        match base.checked_sub((-delta) as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    };
+                    pc += 1;
+                }
+                Atom::Jump4 => {
+                    let Some(disp) = reader.read_i32(cursor) else {
+                        return false;
+                    };
+                    let base = match cursor.checked_add(4) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    let delta = i64::from(disp);
+                    cursor = if delta >= 0 {
+                        match base.checked_add(delta as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    } else {
+                        match base.checked_sub((-delta) as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    };
+                    pc += 1;
+                }
+                Atom::ReadI8(slot) => {
+                    let Some(value) = reader.read_u8(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = (value as i8) as i64 as u64;
+                    }
+                    cursor = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::ReadU8(slot) => {
+                    let Some(value) = reader.read_u8(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = u64::from(value);
+                    }
+                    cursor = match cursor.checked_add(1) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::ReadI16(slot) => {
+                    let Some(value) = reader.read_i16(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = value as i64 as u64;
+                    }
+                    cursor = match cursor.checked_add(2) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::ReadU16(slot) => {
+                    let Some(value) = reader.read_u16(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = u64::from(value);
+                    }
+                    cursor = match cursor.checked_add(2) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::ReadI32(slot) => {
+                    let Some(value) = reader.read_i32(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = value as i64 as u64;
+                    }
+                    cursor = match cursor.checked_add(4) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::ReadU32(slot) => {
+                    let Some(value) = reader.read_u32(cursor) else {
+                        return false;
+                    };
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = u64::from(value);
+                    }
+                    cursor = match cursor.checked_add(4) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Zero(slot) => {
+                    if let Some(dst) = work_save.get_mut(usize::from(slot)) {
+                        *dst = 0;
+                    }
+                    pc += 1;
+                }
+                Atom::Back(n) => {
+                    cursor = match cursor.checked_sub(u64::from(n)) {
+                        Some(next) => next,
+                        None => return false,
+                    };
+                    pc += 1;
+                }
+                Atom::Aligned(align) => {
+                    let mask = (1u64 << u64::from(align)).wrapping_sub(1);
+                    if cursor & mask != 0 {
+                        return false;
+                    }
+                    pc += 1;
+                }
+                Atom::Check(slot) => {
+                    let expected = work_save.get(usize::from(slot)).copied().unwrap_or(0);
+                    if cursor != expected {
+                        return false;
+                    }
+                    pc += 1;
+                }
+                Atom::Nop => {
+                    pc += 1;
+                }
+                Atom::SkipRange(_, _)
+                | Atom::Push(_)
+                | Atom::Pop
+                | Atom::Case(_)
+                | Atom::Break(_) => {
+                    debug_assert!(
+                        false,
+                        "linear exec must only run on patterns without backtracking/control-flow atoms"
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+
+    fn exec_backtracking(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
         #[derive(Copy, Clone)]
         struct State {
             cursor: Offset,
@@ -544,6 +766,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 pub struct Matches<'a, 'p, B: BinaryView> {
     scanner: Scanner<'a, B>,
     pat: &'p [Atom],
+    linear_exec: bool,
     range_index: usize,
     cursor: Option<Offset>,
     anchor: [u8; ANCHOR_MAX_LEN],
@@ -588,7 +811,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         save: &mut [Offset],
     ) -> Option<Offset> {
         while cursor < range.end {
-            if self.scanner.exec(cursor, self.pat, save) {
+            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
                 return Some(cursor);
             }
             let next = cursor.checked_add(1)?;
@@ -647,7 +870,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
                 return None;
             };
-            if self.scanner.exec(cursor, self.pat, save) {
+            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
                 return Some(cursor);
             }
         }
@@ -666,7 +889,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         };
         while probe < range.end {
             if self.scanner.view.read_u8(probe) == Some(needle)
-                && self.scanner.exec(cursor, self.pat, save)
+                && self.scanner.exec(cursor, self.pat, save, self.linear_exec)
             {
                 return Some(cursor);
             }
@@ -716,9 +939,12 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let jump = u64::from(jumps[usize::from(probe)].max(1));
             if probe == last
                 && self.prefix_matches_mapped(cursor)
-                && self
-                    .scanner
-                    .exec(cursor.checked_sub(self.anchor_offset)?, self.pat, save)
+                && self.scanner.exec(
+                    cursor.checked_sub(self.anchor_offset)?,
+                    self.pat,
+                    save,
+                    self.linear_exec,
+                )
             {
                 return cursor.checked_sub(self.anchor_offset);
             }
@@ -788,7 +1014,10 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
                     return None;
                 };
-                if self.scanner.exec(start_cursor, self.pat, save) {
+                if self
+                    .scanner
+                    .exec(start_cursor, self.pat, save, self.linear_exec)
+                {
                     return Some(start_cursor);
                 }
             }
@@ -848,6 +1077,15 @@ fn select_anchor(
     (anchor, anchor_len, start as u64)
 }
 
+fn is_linear_pattern(pat: &[Atom]) -> bool {
+    !pat.iter().any(|atom| {
+        matches!(
+            atom,
+            Atom::SkipRange(_, _) | Atom::Push(_) | Atom::Pop | Atom::Case(_) | Atom::Break(_)
+        )
+    })
+}
+
 fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
     let delta = mapped.checked_sub(span.mapped.start)?;
     if mapped >= span.mapped.end {
@@ -859,7 +1097,7 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_prefix, BinaryView, CodeSpan, Offset, Scanner};
+    use super::{BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern};
     use crate::pattern::Atom;
 
     #[derive(Debug)]
@@ -1049,5 +1287,17 @@ mod tests {
         assert!(!view.is_in_code(11));
         assert!(view.is_in_code(14));
         assert!(!view.is_in_code(15));
+    }
+
+    #[test]
+    fn linear_exec_selector_rejects_backtracking_atoms() {
+        assert!(is_linear_pattern(&[
+            Atom::Save(0),
+            Atom::Byte(0x48),
+            Atom::Skip(3)
+        ]));
+        assert!(!is_linear_pattern(&[Atom::Save(0), Atom::SkipRange(1, 3)]));
+        assert!(!is_linear_pattern(&[Atom::Push(1), Atom::Pop]));
+        assert!(!is_linear_pattern(&[Atom::Case(1), Atom::Break(0)]));
     }
 }

@@ -1,12 +1,12 @@
 use std::{cell::Cell, ffi::CStr};
 
-use goblin::mach::{constants::VM_PROT_EXECUTE, Mach, SingleArch};
+use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
 use thiserror::Error;
 
 use crate::{
+    Pod, Ptr, TypedView,
     address::MappedAddressView,
     scan::{BinaryView, CodeSpan, Offset, Scanner},
-    Pod, Ptr, TypedView,
 };
 
 /// Error type returned by Mach-O wrapper APIs.
