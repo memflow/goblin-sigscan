@@ -348,6 +348,8 @@ impl<'a> Parser<'a> {
                     })?;
                     let align = match op {
                         '0'..='9' => op as u8 - b'0',
+                        'A'..='Z' => 10 + (op as u8 - b'A'),
+                        'a'..='z' => 10 + (op as u8 - b'a'),
                         _ => {
                             return Err(ParsePatError {
                                 kind: PatError::ReadOperand,
@@ -619,7 +621,7 @@ fn push_skip(result: &mut Vec<Atom>, mut remaining: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Atom, ParsePatError, PatError, parse};
+    use super::{parse, Atom, ParsePatError, PatError};
 
     #[test]
     fn parses_used_subset() {
@@ -763,5 +765,35 @@ mod tests {
         );
 
         assert_eq!(parse("??"), Ok(vec![Atom::Save(0)]));
+    }
+
+    #[test]
+    fn supports_aligned_base36_syntax() {
+        assert_eq!(parse("@4"), Ok(vec![Atom::Save(0), Atom::Aligned(4)]));
+        assert_eq!(parse("@A"), Ok(vec![Atom::Save(0), Atom::Aligned(10)]));
+        assert_eq!(parse("@f"), Ok(vec![Atom::Save(0), Atom::Aligned(15)]));
+        assert_eq!(parse("@z"), Ok(vec![Atom::Save(0), Atom::Aligned(35)]));
+
+        assert_eq!(
+            parse("@") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::ReadOperand,
+                position: 0,
+            })
+        );
+        assert_eq!(
+            parse("@_") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::ReadOperand,
+                position: 1,
+            })
+        );
+        assert_eq!(
+            parse("@?") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::ReadOperand,
+                position: 1,
+            })
+        );
     }
 }
