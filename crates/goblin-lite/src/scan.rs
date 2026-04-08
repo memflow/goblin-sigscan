@@ -19,6 +19,18 @@ pub trait BinaryView {
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize>;
 
     #[inline]
+    fn code_ranges(&self) -> impl Iterator<Item = &Range<Offset>> + '_ {
+        self.code_spans().iter().map(|span| &span.mapped)
+    }
+
+    #[inline]
+    fn is_in_code(&self, mapped: Offset) -> bool {
+        self.code_spans()
+            .iter()
+            .any(|span| span.mapped.contains(&mapped))
+    }
+
+    #[inline]
     fn read_u8(&self, offset: Offset) -> Option<u8> {
         self.image()
             .get(self.mapped_to_file_offset(offset)?)
@@ -804,5 +816,49 @@ mod tests {
 
         assert_eq!(len, 2);
         assert_eq!(&prefix[..len], &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn code_ranges_yield_mapped_ranges_in_order() {
+        let view = TestView {
+            bytes: vec![0u8; 16],
+            spans: vec![
+                CodeSpan {
+                    mapped: 10..13,
+                    file: 0..3,
+                },
+                CodeSpan {
+                    mapped: 30..35,
+                    file: 8..13,
+                },
+            ],
+        };
+
+        let ranges = view.code_ranges().cloned().collect::<Vec<_>>();
+        assert_eq!(ranges, vec![10..13, 30..35]);
+    }
+
+    #[test]
+    fn is_in_code_detects_hits_and_gaps() {
+        let view = TestView {
+            bytes: vec![0u8; 16],
+            spans: vec![
+                CodeSpan {
+                    mapped: 5..8,
+                    file: 0..3,
+                },
+                CodeSpan {
+                    mapped: 12..15,
+                    file: 8..11,
+                },
+            ],
+        };
+
+        assert!(view.is_in_code(5));
+        assert!(view.is_in_code(7));
+        assert!(!view.is_in_code(8));
+        assert!(!view.is_in_code(11));
+        assert!(view.is_in_code(14));
+        assert!(!view.is_in_code(15));
     }
 }
