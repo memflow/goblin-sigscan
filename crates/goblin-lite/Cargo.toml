@@ -12,3 +12,10 @@ thiserror = { workspace = true }
 bytemuck = { workspace = true }
 goblin-lite-macros = { path = "../goblin-lite-macros" }
 goblin-lite-pattern = { path = "../goblin-lite-pattern" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "scan_perf"
+harness = false

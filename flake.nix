@@ -28,6 +28,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             rustToolchain
+            pkgs.gnuplot
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
