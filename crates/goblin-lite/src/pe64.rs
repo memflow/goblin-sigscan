@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::CStr, ops::Range};
+use std::{cell::Cell, ffi::CStr};
 
 use goblin::pe::{
     section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     address::MappedAddressView,
-    scan::{BinaryView, Offset, Scanner},
+    scan::{BinaryView, CodeSpan, Offset, Scanner},
     Pod, Ptr, TypedView,
 };
 
@@ -29,7 +29,7 @@ pub type Result<T> = std::result::Result<T, PeError>;
 pub struct PeFile<'a> {
     bytes: &'a [u8],
     pe: PE<'a>,
-    code_ranges: Vec<Range<Offset>>,
+    code_spans: Vec<CodeSpan>,
     section_lookup_cache: Cell<Option<usize>>,
 }
 
@@ -59,7 +59,7 @@ impl<'a> PeFile<'a> {
         if !pe.is_64 {
             return Err(PeError::NotPe64);
         }
-        let code_ranges = pe
+        let code_spans = pe
             .sections
             .iter()
             .filter_map(|section| {
@@ -70,13 +70,19 @@ impl<'a> PeFile<'a> {
                 }
                 let start = u64::from(section.virtual_address);
                 let end = start.checked_add(u64::from(section.size_of_raw_data))?;
-                Some(start..end)
+                let file_start = usize::try_from(section.pointer_to_raw_data).ok()?;
+                let file_size = usize::try_from(section.size_of_raw_data).ok()?;
+                let file_end = file_start.checked_add(file_size)?;
+                Some(CodeSpan {
+                    mapped: start..end,
+                    file: file_start..file_end,
+                })
             })
             .collect();
         Ok(Self {
             bytes,
             pe,
-            code_ranges,
+            code_spans,
             section_lookup_cache: Cell::new(None),
         })
     }
@@ -377,8 +383,12 @@ impl MappedAddressView for PeFile<'_> {
 }
 
 impl BinaryView for PeFile<'_> {
-    fn code_ranges(&self) -> &[Range<Offset>] {
-        &self.code_ranges
+    fn image(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn code_spans(&self) -> &[CodeSpan] {
+        &self.code_spans
     }
 
     fn read_u8(&self, offset: Offset) -> Option<u8> {

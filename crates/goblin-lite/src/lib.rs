@@ -10,5 +10,5 @@ pub mod pe64;
 mod scan;
 mod typed;
 pub use address::{FromLeBytes, MappedAddressView};
-pub use scan::{BinaryView, Matches, Offset};
+pub use scan::{BinaryView, CodeSpan, Matches, Offset};
 pub use typed::{Pod, Ptr, TypedView, Va};

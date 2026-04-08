@@ -1,11 +1,11 @@
-use std::{cell::Cell, ffi::CStr, ops::Range};
+use std::{cell::Cell, ffi::CStr};
 
 use goblin::mach::{constants::VM_PROT_EXECUTE, Mach, SingleArch};
 use thiserror::Error;
 
 use crate::{
     address::MappedAddressView,
-    scan::{BinaryView, Offset, Scanner},
+    scan::{BinaryView, CodeSpan, Offset, Scanner},
     Pod, Ptr, TypedView,
 };
 
@@ -28,7 +28,7 @@ pub type Result<T> = std::result::Result<T, MachError>;
 pub struct MachFile<'a> {
     bytes: &'a [u8],
     mach: Mach<'a>,
-    code_ranges: Vec<Range<Offset>>,
+    code_spans: Vec<CodeSpan>,
     load_ranges: Vec<LoadRange>,
     load_lookup_cache: Cell<Option<usize>>,
 }
@@ -64,19 +64,19 @@ impl<'a> MachFile<'a> {
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let mach = Mach::parse(bytes)?;
 
-        let mut code_ranges = Vec::new();
+        let mut code_spans = Vec::new();
         let mut load_ranges = Vec::new();
 
         match &mach {
             Mach::Binary(binary) => {
-                collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges)?;
+                collect_ranges(binary.segments.iter(), &mut code_spans, &mut load_ranges)?;
             }
             Mach::Fat(fat) => {
                 let mut found = false;
                 for index in 0..fat.narches {
                     let arch = fat.get(index)?;
                     if let SingleArch::MachO(binary) = arch {
-                        collect_ranges(binary.segments.iter(), &mut code_ranges, &mut load_ranges)?;
+                        collect_ranges(binary.segments.iter(), &mut code_spans, &mut load_ranges)?;
                         found = true;
                         break;
                     }
@@ -90,7 +90,7 @@ impl<'a> MachFile<'a> {
         Ok(Self {
             bytes,
             mach,
-            code_ranges,
+            code_spans,
             load_ranges,
             load_lookup_cache: Cell::new(None),
         })
@@ -315,8 +315,12 @@ impl MappedAddressView for MachFile<'_> {
 }
 
 impl BinaryView for MachFile<'_> {
-    fn code_ranges(&self) -> &[Range<Offset>] {
-        &self.code_ranges
+    fn image(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn code_spans(&self) -> &[CodeSpan] {
+        &self.code_spans
     }
 
     fn read_u8(&self, offset: Offset) -> Option<u8> {
@@ -343,7 +347,7 @@ impl BinaryView for MachFile<'_> {
 
 fn collect_ranges<'a, I>(
     segments: I,
-    code_ranges: &mut Vec<Range<Offset>>,
+    code_spans: &mut Vec<CodeSpan>,
     load_ranges: &mut Vec<LoadRange>,
 ) -> Result<()>
 where
@@ -365,7 +369,16 @@ where
         });
 
         if (segment.initprot & VM_PROT_EXECUTE) != 0 {
-            code_ranges.push(virt_start..virt_end);
+            let file_start = usize::try_from(segment.fileoff).ok();
+            let file_size = usize::try_from(segment.filesize).ok();
+            if let (Some(file_start), Some(file_size)) = (file_start, file_size)
+                && let Some(file_end) = file_start.checked_add(file_size)
+            {
+                code_spans.push(CodeSpan {
+                    mapped: virt_start..virt_end,
+                    file: file_start..file_end,
+                });
+            }
         }
     }
 

@@ -6,9 +6,16 @@ pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
 const PREFIX_BUF_LEN: usize = 16;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeSpan {
+    pub mapped: Range<Offset>,
+    pub file: Range<usize>,
+}
+
 /// Read-only view over a mapped binary image for scanner execution.
 pub trait BinaryView {
-    fn code_ranges(&self) -> &[Range<Offset>];
+    fn image(&self) -> &[u8];
+    fn code_spans(&self) -> &[CodeSpan];
     fn read_u8(&self, offset: Offset) -> Option<u8>;
     fn read_i16(&self, offset: Offset) -> Option<i16>;
     fn read_u16(&self, offset: Offset) -> Option<u16>;
@@ -356,14 +363,19 @@ pub struct Matches<'a, 'p, B: BinaryView> {
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     /// Advances to the next match and writes save-slot values into `save`.
     pub fn next(&mut self, save: &mut [Offset]) -> bool {
-        while let Some(range) = self.scanner.view.code_ranges().get(self.range_index) {
-            let start = self.cursor.unwrap_or(range.start);
+        while let Some(span) = self.scanner.view.code_spans().get(self.range_index) {
+            let start = self.cursor.unwrap_or(span.mapped.start);
+            if start >= span.mapped.end {
+                self.range_index += 1;
+                self.cursor = None;
+                continue;
+            }
             let matched_at = if self.prefix_len == 0 {
-                self.scan_range_linear(range.clone(), start, save)
+                self.scan_range_linear(span.mapped.clone(), start, save)
             } else if self.prefix_len < 4 {
-                self.scan_range_first_byte(range.clone(), start, save)
+                self.scan_span_first_byte(span, start, save)
             } else {
-                self.scan_range_quick(range.clone(), start, save)
+                self.scan_span_quick(span, start, save)
             };
 
             if let Some(cursor) = matched_at {
@@ -390,6 +402,49 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             }
             let next = cursor.checked_add(1)?;
             cursor = next;
+        }
+        None
+    }
+
+    fn scan_span_first_byte(
+        &self,
+        span: &CodeSpan,
+        start: Offset,
+        save: &mut [Offset],
+    ) -> Option<Offset> {
+        let Some(bytes) = self.scanner.view.image().get(span.file.clone()) else {
+            return self.scan_range_first_byte(span.mapped.clone(), start, save);
+        };
+        let Some(start_file) = mapped_to_file_offset(span, start) else {
+            return self.scan_range_first_byte(span.mapped.clone(), start, save);
+        };
+        let Some(start_index) = start_file.checked_sub(span.file.start) else {
+            return self.scan_range_first_byte(span.mapped.clone(), start, save);
+        };
+
+        debug_assert_eq!(
+            span.mapped.end.checked_sub(span.mapped.start),
+            u64::try_from(span.file.end.saturating_sub(span.file.start)).ok(),
+            "code span mapped/file ranges must have identical lengths"
+        );
+
+        let Some(haystack) = bytes.get(start_index..) else {
+            return self.scan_range_first_byte(span.mapped.clone(), start, save);
+        };
+        let needle = self.prefix[0];
+        for (delta, byte) in haystack.iter().copied().enumerate() {
+            if byte != needle {
+                continue;
+            }
+            let Some(mapped_delta) = Offset::try_from(start_index.checked_add(delta)?).ok() else {
+                return None;
+            };
+            let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
+                return None;
+            };
+            if self.scanner.exec(cursor, self.pat, save) {
+                return Some(cursor);
+            }
         }
         None
     }
@@ -451,7 +506,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
 
             let jump = u64::from(jumps[usize::from(probe)].max(1));
             if probe == last
-                && self.prefix_matches(cursor)
+                && self.prefix_matches_mapped(cursor)
                 && self.scanner.exec(cursor, self.pat, save)
             {
                 return Some(cursor);
@@ -462,7 +517,71 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         None
     }
 
-    fn prefix_matches(&self, cursor: Offset) -> bool {
+    fn scan_span_quick(
+        &self,
+        span: &CodeSpan,
+        start: Offset,
+        save: &mut [Offset],
+    ) -> Option<Offset> {
+        let Some(bytes) = self.scanner.view.image().get(span.file.clone()) else {
+            return self.scan_range_quick(span.mapped.clone(), start, save);
+        };
+        let Some(start_file) = mapped_to_file_offset(span, start) else {
+            return self.scan_range_quick(span.mapped.clone(), start, save);
+        };
+        let Some(start_index) = start_file.checked_sub(span.file.start) else {
+            return self.scan_range_quick(span.mapped.clone(), start, save);
+        };
+
+        let prefix = &self.prefix[..self.prefix_len];
+        let Some(haystack) = bytes.get(start_index..) else {
+            return self.scan_range_quick(span.mapped.clone(), start, save);
+        };
+        if haystack.len() < self.prefix_len {
+            return None;
+        }
+
+        let mut jumps = [self.prefix_len as u8; 256];
+        for (index, byte) in prefix
+            .iter()
+            .take(self.prefix_len.saturating_sub(1))
+            .enumerate()
+        {
+            jumps[usize::from(*byte)] = (self.prefix_len - index - 1) as u8;
+        }
+
+        let last = prefix[self.prefix_len - 1];
+        let mut index = 0usize;
+        let max_index = haystack.len() - self.prefix_len;
+        while index <= max_index {
+            let probe = haystack[index + self.prefix_len - 1];
+
+            let jump = usize::from(jumps[usize::from(probe)].max(1));
+            if probe == last
+                && haystack
+                    .get(index..index + self.prefix_len)
+                    .is_some_and(|window| window == prefix)
+            {
+                let Some(total_index) = start_index.checked_add(index) else {
+                    return None;
+                };
+                let Some(mapped_delta) = Offset::try_from(total_index).ok() else {
+                    return None;
+                };
+                let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
+                    return None;
+                };
+                if self.scanner.exec(cursor, self.pat, save) {
+                    return Some(cursor);
+                }
+            }
+            index = index.checked_add(jump)?;
+        }
+
+        None
+    }
+
+    fn prefix_matches_mapped(&self, cursor: Offset) -> bool {
         for (index, expected) in self.prefix[..self.prefix_len].iter().enumerate() {
             let delta = index as u64;
             let Some(offset) = cursor.checked_add(delta) else {
@@ -495,17 +614,24 @@ fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
     (prefix, len)
 }
 
+fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
+    let delta = mapped.checked_sub(span.mapped.start)?;
+    if mapped >= span.mapped.end {
+        return None;
+    }
+    let delta_usize = usize::try_from(delta).ok()?;
+    span.file.start.checked_add(delta_usize)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
-
-    use super::{build_prefix, BinaryView, Offset, Scanner};
+    use super::{build_prefix, BinaryView, CodeSpan, Offset, Scanner};
     use crate::pattern::Atom;
 
     #[derive(Debug)]
     struct TestView {
         bytes: Vec<u8>,
-        ranges: Vec<Range<Offset>>,
+        spans: Vec<CodeSpan>,
     }
 
     impl TestView {
@@ -513,14 +639,21 @@ mod tests {
             let end = bytes.len() as Offset;
             Self {
                 bytes: bytes.to_vec(),
-                ranges: std::iter::once(0..end).collect(),
+                spans: vec![CodeSpan {
+                    mapped: 0..end,
+                    file: 0..bytes.len(),
+                }],
             }
         }
     }
 
     impl BinaryView for TestView {
-        fn code_ranges(&self) -> &[Range<Offset>] {
-            &self.ranges
+        fn image(&self) -> &[u8] {
+            &self.bytes
+        }
+
+        fn code_spans(&self) -> &[CodeSpan] {
+            &self.spans
         }
 
         fn read_u8(&self, offset: Offset) -> Option<u8> {

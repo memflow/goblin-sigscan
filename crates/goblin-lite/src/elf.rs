@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::CStr, ops::Range};
+use std::{cell::Cell, ffi::CStr};
 
 use goblin::elf::{
     program_header::{PF_X, PT_LOAD},
@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     address::MappedAddressView,
-    scan::{BinaryView, Offset, Scanner},
+    scan::{BinaryView, CodeSpan, Offset, Scanner},
     Pod, Ptr, TypedView,
 };
 
@@ -29,7 +29,7 @@ pub type Result<T> = std::result::Result<T, ElfError>;
 pub struct ElfFile<'a> {
     bytes: &'a [u8],
     elf: Elf<'a>,
-    code_ranges: Vec<Range<Offset>>,
+    code_spans: Vec<CodeSpan>,
     load_ranges: Vec<LoadRange>,
     load_lookup_cache: Cell<Option<usize>>,
 }
@@ -65,7 +65,7 @@ impl<'a> ElfFile<'a> {
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self> {
         let elf = Elf::parse(bytes)?;
 
-        let mut code_ranges = Vec::new();
+        let mut code_spans = Vec::new();
         let mut load_ranges = Vec::new();
 
         for ph in &elf.program_headers {
@@ -88,14 +88,23 @@ impl<'a> ElfFile<'a> {
             });
 
             if (ph.p_flags & PF_X) != 0 {
-                code_ranges.push(virt_start..virt_end);
+                let file_start = usize::try_from(ph.p_offset).ok();
+                let file_size = usize::try_from(ph.p_filesz).ok();
+                if let (Some(file_start), Some(file_size)) = (file_start, file_size)
+                    && let Some(file_end) = file_start.checked_add(file_size)
+                {
+                    code_spans.push(CodeSpan {
+                        mapped: virt_start..virt_end,
+                        file: file_start..file_end,
+                    });
+                }
             }
         }
 
         Ok(Self {
             bytes,
             elf,
-            code_ranges,
+            code_spans,
             load_ranges,
             load_lookup_cache: Cell::new(None),
         })
@@ -320,8 +329,12 @@ impl MappedAddressView for ElfFile<'_> {
 }
 
 impl BinaryView for ElfFile<'_> {
-    fn code_ranges(&self) -> &[Range<Offset>] {
-        &self.code_ranges
+    fn image(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn code_spans(&self) -> &[CodeSpan] {
+        &self.code_spans
     }
 
     fn read_u8(&self, offset: Offset) -> Option<u8> {
