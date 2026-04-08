@@ -1055,6 +1055,12 @@ fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
     (prefix, len)
 }
 
+/// Chooses the best fixed-size literal anchor window from the prefix.
+///
+/// The scanner uses this anchor for candidate filtering before running full
+/// pattern execution. We score each possible window and select the one with the
+/// highest expected selectivity (ties prefer later windows for slightly better
+/// locality with following atoms).
 fn select_anchor(
     prefix: &[u8; PREFIX_BUF_LEN],
     prefix_len: usize,
@@ -1065,11 +1071,59 @@ fn select_anchor(
     }
 
     let anchor_len = prefix_len.min(ANCHOR_MAX_LEN);
-    let start = prefix_len - anchor_len;
-    for (index, byte) in prefix[start..prefix_len].iter().copied().enumerate() {
+    let mut best_start = 0usize;
+    let mut best_score = 0u32;
+    for start in 0..=prefix_len - anchor_len {
+        let score = anchor_window_score(&prefix[start..start + anchor_len]);
+        if score > best_score || (score == best_score && start > best_start) {
+            best_score = score;
+            best_start = start;
+        }
+    }
+
+    for (index, byte) in prefix[best_start..best_start + anchor_len]
+        .iter()
+        .copied()
+        .enumerate()
+    {
         anchor[index] = byte;
     }
-    (anchor, anchor_len, start as u64)
+    (anchor, anchor_len, best_start as u64)
+}
+
+/// Scores an anchor window by estimated filtering strength.
+///
+/// Higher scores prefer windows with more distinct and less common bytes, and a
+/// stronger terminal byte because quick search probes the window tail first.
+fn anchor_window_score(window: &[u8]) -> u32 {
+    let mut seen = [false; 256];
+    let mut distinct = 0u32;
+    let mut byte_score = 0u32;
+    for byte in window.iter().copied() {
+        let idx = usize::from(byte);
+        if !seen[idx] {
+            seen[idx] = true;
+            distinct += 1;
+        }
+        byte_score += anchor_byte_weight(byte);
+    }
+
+    let duplicate_count = window.len() as u32 - distinct;
+    let last_weight = window.last().copied().map(anchor_byte_weight).unwrap_or(0);
+    (distinct * 8) + byte_score + (last_weight * 2) - (duplicate_count * 3)
+}
+
+/// Heuristic byte rarity weight used by [`anchor_window_score`].
+///
+/// Common x86 opcode bytes/prefixes get lower weights so mixed or rarer windows
+/// are chosen as anchors more often.
+fn anchor_byte_weight(byte: u8) -> u32 {
+    match byte {
+        0x00 | 0x48 | 0x8b | 0x89 | 0x90 | 0xcc | 0xe8 | 0xe9 | 0xff => 1,
+        0x40..=0x4f | 0x50..=0x5f | 0x70..=0x7f => 2,
+        0x66 | 0x67 => 2,
+        _ => 4,
+    }
 }
 
 fn is_linear_pattern(pat: &[Atom]) -> bool {
@@ -1130,7 +1184,7 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 mod tests {
     use super::{
         BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern,
-        is_tiny_literal_jump_pattern, span_index_for_offset,
+        is_tiny_literal_jump_pattern, select_anchor, span_index_for_offset,
     };
     use crate::pattern::Atom;
 
@@ -1277,6 +1331,20 @@ mod tests {
 
         assert_eq!(len, 2);
         assert_eq!(&prefix[..len], &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn anchor_selection_prefers_stronger_window_over_common_suffix() {
+        let mut prefix = [0u8; super::PREFIX_BUF_LEN];
+        let bytes = [0xde, 0xad, 0xbe, 0xef, 0x48, 0x8b, 0x05, 0x48];
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            prefix[index] = byte;
+        }
+
+        let (anchor, len, offset) = select_anchor(&prefix, bytes.len());
+        assert_eq!(len, 4);
+        assert_eq!(offset, 0);
+        assert_eq!(&anchor[..len], &[0xde, 0xad, 0xbe, 0xef]);
     }
 
     #[test]
