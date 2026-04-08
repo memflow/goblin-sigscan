@@ -16,11 +16,44 @@ pub struct CodeSpan {
 pub trait BinaryView {
     fn image(&self) -> &[u8];
     fn code_spans(&self) -> &[CodeSpan];
-    fn read_u8(&self, offset: Offset) -> Option<u8>;
-    fn read_i16(&self, offset: Offset) -> Option<i16>;
-    fn read_u16(&self, offset: Offset) -> Option<u16>;
-    fn read_i32(&self, offset: Offset) -> Option<i32>;
-    fn read_u32(&self, offset: Offset) -> Option<u32>;
+    fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize>;
+
+    #[inline]
+    fn read_u8(&self, offset: Offset) -> Option<u8> {
+        self.image()
+            .get(self.mapped_to_file_offset(offset)?)
+            .copied()
+    }
+
+    #[inline]
+    fn read_i16(&self, offset: Offset) -> Option<i16> {
+        Some(i16::from_le_bytes(self.read_array::<2>(offset)?))
+    }
+
+    #[inline]
+    fn read_u16(&self, offset: Offset) -> Option<u16> {
+        Some(u16::from_le_bytes(self.read_array::<2>(offset)?))
+    }
+
+    #[inline]
+    fn read_i32(&self, offset: Offset) -> Option<i32> {
+        Some(i32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    #[inline]
+    fn read_u32(&self, offset: Offset) -> Option<u32> {
+        Some(u32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    #[inline]
+    fn read_array<const N: usize>(&self, offset: Offset) -> Option<[u8; N]> {
+        let file_offset = self.mapped_to_file_offset(offset)?;
+        let end = file_offset.checked_add(N)?;
+        let bytes = self.image().get(file_offset..end)?;
+        let mut out = [0u8; N];
+        out.copy_from_slice(bytes);
+        Some(out)
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -656,26 +689,10 @@ mod tests {
             &self.spans
         }
 
-        fn read_u8(&self, offset: Offset) -> Option<u8> {
+        fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
             usize::try_from(offset)
                 .ok()
-                .and_then(|index| self.bytes.get(index).copied())
-        }
-
-        fn read_i16(&self, _offset: Offset) -> Option<i16> {
-            None
-        }
-
-        fn read_u16(&self, _offset: Offset) -> Option<u16> {
-            None
-        }
-
-        fn read_i32(&self, _offset: Offset) -> Option<i32> {
-            None
-        }
-
-        fn read_u32(&self, _offset: Offset) -> Option<u32> {
-            None
+                .filter(|index| *index < self.bytes.len())
         }
     }
 

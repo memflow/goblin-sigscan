@@ -391,24 +391,7 @@ impl BinaryView for PeFile<'_> {
         &self.code_spans
     }
 
-    fn read_u8(&self, offset: Offset) -> Option<u8> {
-        let file_offset = self.rva_to_file_offset(offset)?;
-        self.bytes.get(file_offset).copied()
-    }
-
-    fn read_i16(&self, offset: Offset) -> Option<i16> {
-        self.read_le(offset)
-    }
-
-    fn read_u16(&self, offset: Offset) -> Option<u16> {
-        self.read_le(offset)
-    }
-
-    fn read_i32(&self, offset: Offset) -> Option<i32> {
-        self.read_le(offset)
-    }
-
-    fn read_u32(&self, offset: Offset) -> Option<u32> {
-        self.read_le(offset)
+    fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
+        self.rva_to_file_offset(offset)
     }
 }
