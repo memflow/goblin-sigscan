@@ -316,6 +316,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         Matches {
             scanner: Scanner { view: self.view },
             pat: &pat.atoms,
+            required_slots: pat.required_slots,
             linear_exec: pat.linear_exec,
             range_index: 0,
             cursor: None,
@@ -332,6 +333,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         Matches {
             scanner: Scanner { view: self.view },
             pat,
+            required_slots: plan.required_slots,
             linear_exec: plan.linear_exec,
             range_index: 0,
             cursor: None,
@@ -751,6 +753,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         save: &mut [Offset],
         scratch: &mut ExecScratch,
     ) -> bool {
+        if let Some(result) = self.exec_linear_specialized(start, pat, save) {
+            return result;
+        }
         scratch.reset_from_save(save);
         let work_save = &mut scratch.work_save;
         let mut cursor = start;
@@ -960,6 +965,91 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     return false;
                 }
             }
+        }
+    }
+
+    fn exec_linear_specialized(
+        &self,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+    ) -> Option<bool> {
+        match pat {
+            [Atom::Save(0), Atom::Byte(expected), Atom::Jump4] => {
+                let mut reader = ExecReader::new(self.view, start);
+                if reader.read_u8(start) != Some(*expected) {
+                    return Some(false);
+                }
+                let read_at = start.checked_add(1)?;
+                let disp = reader.read_i32(read_at)?;
+                let base = read_at.checked_add(4)?;
+                let target = offset_add_signed(base, i64::from(disp))?;
+                if let Some(slot) = save.get_mut(0) {
+                    *slot = start;
+                }
+                let _ = target;
+                Some(true)
+            }
+            [
+                Atom::Save(0),
+                Atom::Byte(expected),
+                Atom::Jump4,
+                Atom::Save(slot),
+            ] => {
+                let mut reader = ExecReader::new(self.view, start);
+                if reader.read_u8(start) != Some(*expected) {
+                    return Some(false);
+                }
+                let read_at = start.checked_add(1)?;
+                let disp = reader.read_i32(read_at)?;
+                let base = read_at.checked_add(4)?;
+                let target = offset_add_signed(base, i64::from(disp))?;
+                if let Some(start_slot) = save.get_mut(0) {
+                    *start_slot = start;
+                }
+                if let Some(target_slot) = save.get_mut(usize::from(*slot)) {
+                    *target_slot = target;
+                }
+                Some(true)
+            }
+            [Atom::Save(0), Atom::Byte(expected), Atom::Jump1] => {
+                let mut reader = ExecReader::new(self.view, start);
+                if reader.read_u8(start) != Some(*expected) {
+                    return Some(false);
+                }
+                let read_at = start.checked_add(1)?;
+                let disp = reader.read_u8(read_at)? as i8;
+                let base = read_at.checked_add(1)?;
+                let target = offset_add_signed(base, i64::from(disp))?;
+                if let Some(slot) = save.get_mut(0) {
+                    *slot = start;
+                }
+                let _ = target;
+                Some(true)
+            }
+            [
+                Atom::Save(0),
+                Atom::Byte(expected),
+                Atom::Jump1,
+                Atom::Save(slot),
+            ] => {
+                let mut reader = ExecReader::new(self.view, start);
+                if reader.read_u8(start) != Some(*expected) {
+                    return Some(false);
+                }
+                let read_at = start.checked_add(1)?;
+                let disp = reader.read_u8(read_at)? as i8;
+                let base = read_at.checked_add(1)?;
+                let target = offset_add_signed(base, i64::from(disp))?;
+                if let Some(start_slot) = save.get_mut(0) {
+                    *start_slot = start;
+                }
+                if let Some(target_slot) = save.get_mut(usize::from(*slot)) {
+                    *target_slot = target;
+                }
+                Some(true)
+            }
+            _ => None,
         }
     }
 
@@ -1298,11 +1388,21 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 }
 
+#[inline]
+fn offset_add_signed(base: Offset, delta: i64) -> Option<Offset> {
+    if delta >= 0 {
+        base.checked_add(delta as u64)
+    } else {
+        base.checked_sub((-delta) as u64)
+    }
+}
+
 #[derive(Clone, Debug)]
 /// Stateful matcher produced by [`Scanner::matches_code`].
 pub struct Matches<'a, 'p, B: BinaryView> {
     scanner: Scanner<'a, B>,
     pat: &'p [Atom],
+    required_slots: usize,
     linear_exec: bool,
     range_index: usize,
     cursor: Option<Offset>,
@@ -1315,6 +1415,11 @@ pub struct Matches<'a, 'p, B: BinaryView> {
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     /// Advances to the next match and writes save-slot values into `save`.
     pub fn next(&mut self, save: &mut [Offset]) -> bool {
+        debug_assert!(
+            save.len() >= self.required_slots,
+            "caller-provided save buffer must cover all slots referenced by the pattern"
+        );
+        let save = &mut save[..self.required_slots];
         while let Some(span) = self.scanner.view.code_spans().get(self.range_index) {
             let start = self.cursor.unwrap_or(span.mapped.start);
             if start >= span.mapped.end {

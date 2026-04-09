@@ -29,6 +29,10 @@ impl PatternCase {
         let pelite_atoms =
             pelite_pattern::parse(source).expect("pelite benchmark pattern should parse");
         let goblin_save_slots = gl_pattern::save_len(&goblin_atoms);
+        assert!(
+            goblin_save_slots <= SAVE_SLOTS,
+            "benchmark SAVE_SLOTS must cover pattern save slot count"
+        );
         Self {
             label,
             goblin_atoms,
@@ -74,10 +78,10 @@ fn bench_pe64_goblin_vs_pelite(c: &mut Criterion) {
             case,
             |b, case| {
                 b.iter_batched_ref(
-                    || vec![0u64; case.goblin_save_slots.max(SAVE_SLOTS)],
+                    || [0u64; SAVE_SLOTS],
                     |save| {
                         let mut matches = goblin_scanner.matches_code(&case.goblin_atoms);
-                        let found = matches.next(save);
+                        let found = matches.next(&mut save[..case.goblin_save_slots]);
                         black_box(found);
                     },
                     BatchSize::SmallInput,
@@ -109,11 +113,11 @@ fn bench_pe64_goblin_vs_pelite(c: &mut Criterion) {
             case,
             |b, case| {
                 b.iter_batched_ref(
-                    || vec![0u64; case.goblin_save_slots.max(SAVE_SLOTS)],
+                    || [0u64; SAVE_SLOTS],
                     |save| {
                         let mut matches = goblin_scanner.matches_code(&case.goblin_atoms);
                         let mut total = 0usize;
-                        while matches.next(save) {
+                        while matches.next(&mut save[..case.goblin_save_slots]) {
                             total += 1;
                         }
                         black_box(total);
