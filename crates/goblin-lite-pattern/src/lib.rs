@@ -105,6 +105,8 @@ pub enum Atom {
     Jump4,
     /// Follows an absolute pointer.
     Ptr,
+    /// Follows a position-independent reference from a saved base slot.
+    Pir(u8),
     /// Reads and sign-extends the byte under the cursor, writes to slot, advances by 1.
     ReadI8(u8),
     /// Reads and zero-extends the byte under the cursor, writes to slot, advances by 1.
@@ -148,7 +150,8 @@ pub fn save_len(pat: &[Atom]) -> usize {
             | Atom::ReadI32(slot)
             | Atom::ReadU32(slot)
             | Atom::Zero(slot)
-            | Atom::Check(slot) => Some(usize::from(*slot) + 1),
+            | Atom::Check(slot)
+            | Atom::Pir(slot) => Some(usize::from(*slot) + 1),
             _ => None,
         })
         .max()
@@ -254,6 +257,7 @@ pub fn save_len(pat: &[Atom]) -> usize {
 ///
 /// - Supported: hex bytes, `?`, `'`, `%`, `$`, `*`, `{...}`, `[N]`, `[A-B]`, `@n`,
 ///   `i1/i2/i4`, `u1/u2/u4`, `z`, alternation, and strings.
+/// - Programmatic-only atoms (not parser syntax): `Pir(slot)`.
 ///
 /// # Save-slot semantics
 ///
@@ -1021,6 +1025,12 @@ mod tests {
                 position: 1,
             })
         );
+    }
+
+    #[test]
+    fn save_len_counts_programmatic_pir_slots() {
+        let pat = [Atom::Save(0), Atom::Pir(3)];
+        assert_eq!(super::save_len(&pat), 4);
     }
 
     proptest! {

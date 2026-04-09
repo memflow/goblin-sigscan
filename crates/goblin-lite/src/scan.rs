@@ -906,6 +906,25 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     cursor = next;
                     pc += 1;
                 }
+                Atom::Pir(slot) => {
+                    let Some(disp) = reader.read_i32(cursor) else {
+                        return false;
+                    };
+                    let base = work_save.get(usize::from(slot)).copied().unwrap_or(cursor);
+                    let delta = i64::from(disp);
+                    cursor = if delta >= 0 {
+                        match base.checked_add(delta as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    } else {
+                        match base.checked_sub((-delta) as u64) {
+                            Some(next) => next,
+                            None => return false,
+                        }
+                    };
+                    pc += 1;
+                }
                 Atom::ReadI8(slot) => {
                     let Some(value) = reader.read_u8(cursor) else {
                         return false;
@@ -1223,6 +1242,25 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         cursor = next;
+                        pc += 1;
+                    }
+                    Atom::Pir(slot) => {
+                        let Some(disp) = reader.read_i32(cursor) else {
+                            break;
+                        };
+                        let base = work_save.get(usize::from(slot)).copied().unwrap_or(cursor);
+                        let delta = i64::from(disp);
+                        if delta >= 0 {
+                            let Some(next) = base.checked_add(delta as u64) else {
+                                break;
+                            };
+                            cursor = next;
+                        } else {
+                            let Some(next) = base.checked_sub((-delta) as u64) else {
+                                break;
+                            };
+                            cursor = next;
+                        }
                         pc += 1;
                     }
                     Atom::ReadI8(slot) => {
@@ -1988,6 +2026,41 @@ mod tests {
 
         assert!(scanner.matches_code(&pat).next(&mut save));
         assert_eq!(save[1], 8);
+    }
+
+    #[test]
+    fn pir_follows_saved_base_slot_with_signed_disp32() {
+        let bytes = [0x90, 0x11, 0x22, 0x33, 0xfc, 0xff, 0xff, 0xff];
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Skip(4),
+            Atom::Save(1),
+            Atom::Pir(1),
+            Atom::Byte(0x90),
+        ];
+        let mut save = [0u64; 2];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 0);
+        assert_eq!(save[1], 4);
+    }
+
+    #[test]
+    fn pir_fails_when_disp32_cannot_be_read() {
+        let bytes = [0x90, 0x01, 0x02, 0x03];
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Byte(0x90),
+            Atom::Pir(0),
+            Atom::Byte(0x90),
+        ];
+        let mut save = [0u64; 1];
+
+        assert!(!scanner.matches_code(&pat).next(&mut save));
     }
 
     #[test]
