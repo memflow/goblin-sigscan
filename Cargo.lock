@@ -234,6 +234,7 @@ dependencies = [
  "goblin-lite-macros",
  "goblin-lite-pattern",
  "memchr",
+ "pelite",
  "thiserror",
 ]
 

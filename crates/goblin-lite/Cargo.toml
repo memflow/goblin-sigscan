@@ -16,7 +16,12 @@ goblin-lite-pattern = { path = "../goblin-lite-pattern" }
 
 [dev-dependencies]
 criterion = "0.5"
+pelite = "0.10"
 
 [[bench]]
 name = "scan_perf"
+harness = false
+
+[[bench]]
+name = "pelite_compare"
 harness = false

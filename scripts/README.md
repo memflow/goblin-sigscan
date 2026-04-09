@@ -53,3 +53,9 @@ Write flamegraph to a specific file:
 ```bash
 scripts/flamegraph-scan.sh --output perf.svg -- fixtures/libmemflow_coredump.x86_64.so "55 41 57"
 ```
+
+Run the goblin-lite vs pelite PE benchmark:
+
+```bash
+cargo bench -p goblin-lite --bench pelite_compare
+```
