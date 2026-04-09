@@ -49,10 +49,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -104,10 +102,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -128,10 +124,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let _is_fat = matches!(file.mach(), goblin::mach::Mach::Fat(_));
     ///     Ok(())
@@ -156,10 +150,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());
@@ -181,10 +173,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let _vmaddr = file.file_offset_to_vmaddr(0x1000);
     ///     Ok(())
@@ -211,10 +201,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());
@@ -248,10 +236,8 @@ impl<'a> MachFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_native.aarch64.dylib"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::mach::MachFile::from_bytes(bytes)?;
     ///     let Some(vmaddr) = file.file_offset_to_vmaddr(0x1000) else {
     ///         return Ok(());

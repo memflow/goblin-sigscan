@@ -43,7 +43,7 @@ pub fn pattern(input: TokenStream) -> TokenStream {
 
 fn goblin_lite_crate_root() -> String {
     match crate_name("goblin-lite") {
-        Ok(FoundCrate::Itself) => "crate".to_owned(),
+        Ok(FoundCrate::Itself) => "goblin_lite".to_owned(),
         Ok(FoundCrate::Name(name)) => name.replace('-', "_"),
         Err(err) => panic!("unable to resolve goblin-lite crate for macro expansion: {err}"),
     }

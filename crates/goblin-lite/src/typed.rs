@@ -151,10 +151,10 @@ mod tests {
         }
 
         fn mapped_to_file_offset(&self, mapped_offset: Offset) -> Option<usize> {
-            if mapped_offset >= 100 && mapped_offset < 108 {
+            if (100..108).contains(&mapped_offset) {
                 return usize::try_from(mapped_offset - 100).ok();
             }
-            if mapped_offset >= 200 && mapped_offset < 204 {
+            if (200..204).contains(&mapped_offset) {
                 return usize::try_from(mapped_offset - 192).ok();
             }
             None

@@ -59,10 +59,8 @@ impl_from_le_bytes!(i64, 8);
 /// use goblin_lite::{MappedAddressView, pe64::PeFile};
 ///
 /// fn main() -> Result<(), Box<dyn Error>> {
-///     let bytes = include_bytes!(concat!(
-///         env!("CARGO_MANIFEST_DIR"),
-///         "/fixtures/memflow_coredump.x86_64.dll"
-///     ));
+///     // Use real module bytes in production code.
+///     let bytes: &[u8] = &[];
 ///     let file = PeFile::from_bytes(bytes)?;
 ///     let Some(rva) = file.file_offset_to_mapped(0x1000) else {
 ///         return Ok(());

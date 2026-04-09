@@ -1,3 +1,56 @@
+//! Pelite-style pattern parser used by `goblin-lite`.
+//!
+//! This crate parses textual signatures into [`Atom`] instructions that can be
+//! executed by scanner implementations.
+//! For scanner-facing onboarding and end-to-end examples, see
+//! `goblin_lite` crate docs: <https://docs.rs/goblin-lite/latest/goblin_lite/>.
+//!
+//! # Onboarding
+//!
+//! The parser accepts a compact pattern language inspired by pelite.
+//!
+//! ## Core tokens
+//!
+//! - `48 8B 05`: literal bytes (hex pairs)
+//! - `?` / `??`: wildcard byte
+//! - `'`: capture current cursor into the next save slot
+//! - `%`: follow signed rel8 jump target
+//! - `$`: follow signed rel32 jump target
+//! - `i1/i2/i4`: read signed immediate into a save slot
+//! - `u1/u2/u4`: read unsigned immediate into a save slot
+//! - `z`: write zero into a new save slot
+//! - `@4`: assert cursor alignment (`1 << 4` bytes)
+//! - `[N]`: skip exactly `N` bytes
+//! - `[A-B]`: skip a byte count in the inclusive range `A..=B-1`
+//! - `(A | B)`: alternatives with backtracking
+//! - `"text"`: literal ASCII bytes
+//!
+//! ## Save-slot model
+//!
+//! [`parse`] prepends an implicit `Save(0)` instruction. For parsed patterns,
+//! slot `0` therefore holds the match base cursor. Additional captures are
+//! appended in encounter order.
+//!
+//! Use [`save_len`] to allocate enough slots for scanner execution.
+//!
+//! ```
+//! use goblin_lite_pattern::{Atom, parse, save_len};
+//!
+//! let atoms = parse("e8 ${'}")?;
+//! assert_eq!(atoms.first(), Some(&Atom::Save(0)));
+//! assert!(save_len(&atoms) >= 2);
+//! # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+//! ```
+//!
+//! ## Parse failures
+//!
+//! Invalid syntax returns [`ParsePatError`] with both a [`PatError`] kind and
+//! byte position so callers can produce helpful diagnostics.
+//!
+//! Cross reference:
+//! - scanner runtime APIs: `goblin_lite::Scanner` and `goblin_lite::Matches`
+//! - prepared scanning path: `goblin_lite::PreparedPattern`
+
 use std::fmt;
 
 const MAX_PATTERN_SOURCE_BYTES: usize = 16 * 1024;
@@ -142,6 +195,100 @@ pub fn save_len(pat: &[Atom]) -> usize {
 }
 
 /// Parses a pelite-style signature string into atoms.
+///
+/// Parsing injects an implicit `Save(0)` at the beginning so slot `0` always
+/// represents the match base cursor for parsed patterns.
+///
+/// This function is the main entry point for runtime pattern text.
+///
+/// # Language overview
+///
+/// ## Literal bytes and wildcards
+///
+/// - `48 8B 05` matches exact bytes.
+/// - `?` / `??` matches any single byte.
+/// - Hex is case-insensitive and whitespace is ignored.
+///
+/// ## Captures and reads
+///
+/// - `'` captures current cursor into a save slot (`Atom::Save`).
+/// - `u1/u2/u4` reads unsigned little-endian values into a save slot.
+/// - `i1/i2/i4` reads signed little-endian values (sign-extended into `u64`).
+/// - `z` writes `0` into a new save slot.
+///
+/// ## Cursor movement and control flow
+///
+/// - `[N]` skips exactly `N` bytes.
+/// - `[A-B]` compiles to `SkipRange(A, B - 1)`.
+/// - `%` follows a signed rel8 jump.
+/// - `$` follows a signed rel32 jump.
+/// - `%{ ... }` / `${ ... }` follow jump target, run subpattern, then resume.
+/// - `(A | B)` compiles alternation using `Case`/`Break` atoms.
+/// - `@4` asserts cursor alignment to `1 << 4` bytes.
+///
+/// ## Strings
+///
+/// Quoted strings emit literal ASCII bytes:
+///
+/// - `"MZ"` -> `Byte(b'M'), Byte(b'Z')`
+///
+/// # Save-slot semantics
+///
+/// `parse` always prepends `Save(0)`, so parsed patterns always require at
+/// least one save slot. Use [`save_len`] to allocate scanner buffers.
+///
+/// If you are calling scanner APIs from `goblin-lite`, this means `save[0]`
+/// is always the match start for parsed patterns.
+///
+/// # Examples
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse, save_len};
+///
+/// let atoms = parse("48 8B ? ? ? ? 48 89")?;
+/// assert_eq!(atoms.first(), Some(&Atom::Save(0)));
+/// assert_eq!(save_len(&atoms), 1);
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
+///
+/// Capturing a jump target plus a post-jump cursor capture:
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse, save_len};
+///
+/// let atoms = parse("e8 ${'}")?;
+/// assert!(matches!(atoms[0], Atom::Save(0)));
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Jump4)));
+/// assert!(save_len(&atoms) >= 2);
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
+///
+/// Group alternatives:
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse};
+///
+/// let atoms = parse("(85 c0 | 48 85 c0)")?;
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Case(_))));
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Break(_))));
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
+///
+/// # Errors
+///
+/// Returns [`ParsePatError`] with:
+///
+/// - a kind ([`PatError`])
+/// - a byte position in the source string
+///
+/// Common error kinds include:
+///
+/// - [`PatError::UnpairedHexDigit`]
+/// - [`PatError::SkipOperand`]
+/// - [`PatError::ReadOperand`]
+/// - [`PatError::GroupOperand`]
+/// - [`PatError::PatternTooLong`]
+/// - [`PatError::PatternTooComplex`]
 pub fn parse(pat: &str) -> Result<Pattern, ParsePatError> {
     if pat.len() > MAX_PATTERN_SOURCE_BYTES {
         return Err(ParsePatError {
@@ -606,6 +753,8 @@ fn push_skip(result: &mut Vec<Atom>, mut remaining: u32) {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{Atom, ParsePatError, PatError, parse};
 
     #[test]
@@ -789,5 +938,19 @@ mod tests {
                 position: 1,
             })
         );
+    }
+
+    proptest! {
+        #[test]
+        fn parsed_patterns_preserve_base_capture_and_slot_bounds(source in "[ -~]{0,128}") {
+            if let Ok(atoms) = parse(&source) {
+                prop_assert!(!atoms.is_empty());
+                prop_assert_eq!(atoms[0], Atom::Save(0));
+
+                let required_slots = super::save_len(&atoms);
+                prop_assert!(required_slots >= 1);
+                prop_assert!(required_slots <= usize::from(u8::MAX));
+            }
+        }
     }
 }

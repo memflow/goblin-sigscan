@@ -5,3 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Shared pattern parser for goblin-lite"
+
+[dev-dependencies]
+proptest = "1"

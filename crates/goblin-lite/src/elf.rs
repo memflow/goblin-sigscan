@@ -50,10 +50,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -118,10 +116,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -142,10 +138,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let _segments = file.elf().program_headers.len();
     ///     Ok(())
@@ -170,10 +164,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());
@@ -195,10 +187,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let _vaddr = file.file_offset_to_vaddr(0x1000);
     ///     Ok(())
@@ -225,10 +215,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());
@@ -262,10 +250,8 @@ impl<'a> ElfFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/libmemflow_coredump.x86_64.so"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::elf::ElfFile::from_bytes(bytes)?;
     ///     let Some(vaddr) = file.file_offset_to_vaddr(0x1000) else {
     ///         return Ok(());

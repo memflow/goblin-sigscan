@@ -279,6 +279,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 
     /// Returns the minimum required save-slot buffer length for `pat`.
+    ///
+    /// Allocate at least this many elements before calling [`Self::finds_code`]
+    /// or [`Self::matches_code`]/[`Matches::next`].
+    ///
+    /// Patterns produced by `pattern::parse` and `pattern!` always require at
+    /// least one slot because they include an implicit `Save(0)` base capture.
     pub fn required_slots(&self, pat: &[Atom]) -> usize {
         save_len(pat)
     }
@@ -332,6 +338,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 
     /// Returns an iterator-like matcher for all code-range matches.
+    ///
+    /// `save` buffers passed to [`Matches::next`] must be at least
+    /// `self.required_slots(pat)` elements long.
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
         let plan = analyze_pattern(pat);
         Matches {
@@ -363,6 +372,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         self.exec_backtracking(start, pat, save, scratch)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finds_unique_direct(
         &self,
         pat: &[Atom],
@@ -415,6 +425,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         found_once
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn find_next_direct_in_span(
         &self,
         span: &CodeSpan,
@@ -485,6 +496,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_span_first_byte_direct(
         &self,
         span: &CodeSpan,
@@ -551,9 +563,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         let anchor_window = &anchor[..anchor_len];
         for delta in memchr_iter(needle, haystack) {
             if anchor_len > 1
-                && !haystack
+                && haystack
                     .get(delta..delta + anchor_len)
-                    .is_some_and(|window| window == anchor_window)
+                    .is_none_or(|window| window != anchor_window)
             {
                 continue;
             }
@@ -568,6 +580,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_range_first_byte_direct(
         &self,
         range: Range<Offset>,
@@ -593,6 +606,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_span_quick_direct(
         &self,
         span: &CodeSpan,
@@ -693,6 +707,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_range_quick_direct(
         &self,
         range: Range<Offset>,
@@ -1323,6 +1338,16 @@ pub struct Matches<'a, 'p, B: BinaryView> {
 
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     /// Advances to the next match and writes save-slot values into `save`.
+    ///
+    /// # Save buffer contract
+    ///
+    /// - `save.len()` must be at least the pattern's required slot count.
+    /// - Only the required prefix is written; extra tail elements are untouched.
+    /// - On `true`, `save` contains captures for the returned match.
+    /// - On `false`, `save` is left unchanged.
+    ///
+    /// For parsed patterns (`pattern::parse` / `pattern!`), slot `0` is the
+    /// match start and corresponds to the parser-inserted `Save(0)`.
     pub fn next(&mut self, save: &mut [Offset]) -> bool {
         debug_assert!(
             save.len() >= self.required_slots,
@@ -1408,24 +1433,18 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         let anchor_offset = usize::try_from(self.anchor_offset).ok()?;
         for delta in memchr_iter(needle, haystack) {
             if self.anchor_len > 1
-                && !haystack
+                && haystack
                     .get(delta..delta + self.anchor_len)
-                    .is_some_and(|window| window == anchor)
+                    .is_none_or(|window| window != anchor)
             {
                 continue;
             }
-            let Some(anchor_index) = start_index.checked_add(delta) else {
-                return None;
-            };
+            let anchor_index = start_index.checked_add(delta)?;
             let Some(start_index_in_span) = anchor_index.checked_sub(anchor_offset) else {
                 continue;
             };
-            let Some(mapped_delta) = Offset::try_from(start_index_in_span).ok() else {
-                return None;
-            };
-            let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
-                return None;
-            };
+            let mapped_delta = Offset::try_from(start_index_in_span).ok()?;
+            let cursor = span.mapped.start.checked_add(mapped_delta)?;
             if self
                 .scanner
                 .exec(cursor, self.pat, save, self.linear_exec, &mut self.scratch)
@@ -1443,9 +1462,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         save: &mut [Offset],
     ) -> Option<Offset> {
         let needle = self.anchor[0];
-        let Some(mut probe) = cursor.checked_add(self.anchor_offset) else {
-            return None;
-        };
+        let mut probe = cursor.checked_add(self.anchor_offset)?;
         while probe < range.end {
             if self.scanner.view.read_u8(probe) == Some(needle)
                 && self
@@ -1546,18 +1563,10 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                     .get(index..index + self.anchor_len)
                     .is_some_and(|window| window == prefix)
             {
-                let Some(total_index) = start_index.checked_add(index) else {
-                    return None;
-                };
-                let Some(mapped_delta) = Offset::try_from(total_index).ok() else {
-                    return None;
-                };
-                let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
-                    return None;
-                };
-                let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
-                    return None;
-                };
+                let total_index = start_index.checked_add(index)?;
+                let mapped_delta = Offset::try_from(total_index).ok()?;
+                let cursor = span.mapped.start.checked_add(mapped_delta)?;
+                let start_cursor = cursor.checked_sub(self.anchor_offset)?;
                 if self.scanner.exec(
                     start_cursor,
                     self.pat,
@@ -1757,6 +1766,8 @@ fn prefix_matches_mapped<B: BinaryView>(view: &B, cursor: Offset, prefix: &[u8])
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{
         BinaryView, CodeSpan, Offset, PreparedPattern, Scanner, build_prefix, is_linear_pattern,
         select_anchor, span_index_for_offset,
@@ -2045,5 +2056,41 @@ mod tests {
         assert_eq!(span_index_for_offset(&spans, 34), Some(2));
         assert_eq!(span_index_for_offset(&spans, 8), None);
         assert_eq!(span_index_for_offset(&spans, 100), None);
+    }
+
+    proptest! {
+        #[test]
+        fn parsed_single_byte_scan_matches_manual_search(
+            haystack in prop::collection::vec(any::<u8>(), 0..128),
+            needle in any::<u8>(),
+        ) {
+            let source = format!("{needle:02X}");
+            let atoms = crate::pattern::parse(&source).expect("hex byte pattern should parse");
+            let required_slots = crate::pattern::save_len(&atoms);
+
+            let view = TestView::new(&haystack);
+            let scanner = Scanner::new(&view);
+
+            let expected_first = haystack
+                .iter()
+                .position(|byte| *byte == needle)
+                .map(|index| index as u64);
+            let expected_unique = haystack.iter().filter(|byte| **byte == needle).count() == 1;
+
+            let mut iter_save = vec![0u64; required_slots];
+            let mut matches = scanner.matches_code(&atoms);
+            let found = matches.next(&mut iter_save);
+            prop_assert_eq!(found, expected_first.is_some());
+            if let Some(expected_start) = expected_first {
+                prop_assert_eq!(iter_save[0], expected_start);
+            }
+
+            let mut unique_save = vec![0u64; required_slots];
+            let unique = scanner.finds_code(&atoms, &mut unique_save);
+            prop_assert_eq!(unique, expected_unique);
+            if unique {
+                prop_assert_eq!(Some(unique_save[0]), expected_first);
+            }
+        }
     }
 }

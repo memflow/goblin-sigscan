@@ -42,6 +42,31 @@ Tune criterion settings:
 scripts/bench-key.sh --sample-size 20 --measurement-time 5
 ```
 
+## Reproducible Benchmarking Notes
+
+To reduce ratio swings between runs, keep benchmark settings and machine state
+as stable as possible.
+
+- Prefer the default bench profile in `scripts/bench-key.sh` (`--sample-size 30 --measurement-time 8`).
+- Compare branches with the same run shape via `scripts/bench-ab.sh --runs 3`.
+- Close background CPU-heavy apps before runs.
+- Keep power settings stable (plugged-in laptop, no battery saver mode).
+- On Linux, pin to a fixed CPU core when practical, for example:
+
+```bash
+taskset -c 2 scripts/bench-key.sh --mode finds-prepared
+```
+
+- On Linux, prefer a fixed governor for perf work (for example `performance`).
+- On macOS, there is no direct governor toggle; run with stable thermals and repeat A/B runs.
+
+For interpreter-friendly output after each run, use:
+
+```bash
+scripts/bench-summary.sh --mode all
+scripts/bench-pelite-summary.sh --group all
+```
+
 Run a scanner flamegraph with sigscan:
 
 ```bash

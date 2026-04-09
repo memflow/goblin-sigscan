@@ -2,8 +2,8 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly DEFAULT_SAMPLE_SIZE=10
-readonly DEFAULT_MEASUREMENT_TIME=3
+readonly DEFAULT_SAMPLE_SIZE=30
+readonly DEFAULT_MEASUREMENT_TIME=8
 
 usage() {
 	cat <<'EOF'
@@ -13,8 +13,8 @@ Run the scanner benchmark key matrix under nix.
 
 Options:
   --mode NAME            Benchmark mode: matches, finds, finds-prepared, all (default: all)
-  --sample-size N        Criterion sample size (default: 10)
-  --measurement-time S   Criterion measurement time seconds (default: 3)
+  --sample-size N        Criterion sample size (default: 30)
+  --measurement-time S   Criterion measurement time seconds (default: 8)
   --save-baseline NAME   Save baseline with this name
   --baseline NAME        Compare against baseline with this name
   --extra ARG            Extra argument forwarded to criterion (repeatable)

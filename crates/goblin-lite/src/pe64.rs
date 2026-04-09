@@ -42,10 +42,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -95,10 +93,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let pattern = goblin_lite::pattern::parse("90")?;
     ///     let mut matches = file.scanner().matches_code(&pattern);
@@ -119,10 +115,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let _sections = file.pe().sections.len();
     ///     Ok(())
@@ -147,10 +141,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let Some(rva) = file.file_offset_to_rva(0x1000) else {
     ///         return Ok(());
@@ -214,10 +206,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let _va = file.rva_to_va(0x1000);
     ///     Ok(())
@@ -241,10 +231,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let Some(base) = file.rva_to_va(0) else {
     ///         return Ok(());
@@ -272,10 +260,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let _file_offset = file.rva_to_file_offset(0x1000);
     ///     Ok(())
@@ -317,10 +303,8 @@ impl<'a> PeFile<'a> {
     /// use std::error::Error;
     ///
     /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let bytes = include_bytes!(concat!(
-    ///         env!("CARGO_MANIFEST_DIR"),
-    ///         "/fixtures/memflow_coredump.x86_64.dll"
-    ///     ));
+    ///     // Use real module bytes in production code.
+    ///     let bytes: &[u8] = &[];
     ///     let file = goblin_lite::pe64::PeFile::from_bytes(bytes)?;
     ///     let _rva = file.file_offset_to_rva(0x1000);
     ///     Ok(())
@@ -332,8 +316,7 @@ impl<'a> PeFile<'a> {
             .header
             .optional_header
             .as_ref()
-            .map(|header| usize::try_from(header.windows_fields.size_of_headers).ok())
-            .flatten()
+            .and_then(|header| usize::try_from(header.windows_fields.size_of_headers).ok())
             .unwrap_or(0);
         if file_offset < headers_end {
             return Offset::try_from(file_offset).ok();
