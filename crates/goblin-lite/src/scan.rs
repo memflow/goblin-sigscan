@@ -9,6 +9,38 @@ const PREFIX_BUF_LEN: usize = 16;
 const ANCHOR_MAX_LEN: usize = 4;
 
 #[derive(Copy, Clone, Debug)]
+struct BacktrackState {
+    cursor: Offset,
+    pc: usize,
+    fuzzy: Option<u8>,
+    calls_len: usize,
+    save_log_len: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExecScratch {
+    work_save: Vec<Offset>,
+    calls: Vec<Offset>,
+    save_log: Vec<(usize, Offset)>,
+    stack: Vec<BacktrackState>,
+}
+
+impl ExecScratch {
+    fn reset_from_save(&mut self, save: &[Offset]) {
+        self.work_save.clear();
+        self.work_save.extend_from_slice(save);
+    }
+
+    fn commit_to_save(&self, save: &mut [Offset]) {
+        debug_assert!(
+            self.work_save.len() >= save.len(),
+            "scratch save buffer must cover caller save length"
+        );
+        save.copy_from_slice(&self.work_save[..save.len()]);
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 struct PatternPlan {
     required_slots: usize,
     linear_exec: bool,
@@ -290,6 +322,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor: pat.anchor,
             anchor_len: pat.anchor_len,
             anchor_offset: pat.anchor_offset,
+            scratch: ExecScratch::default(),
         }
     }
 
@@ -305,14 +338,22 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor: plan.anchor,
             anchor_len: plan.anchor_len,
             anchor_offset: plan.anchor_offset,
+            scratch: ExecScratch::default(),
         }
     }
 
-    fn exec(&self, start: Offset, pat: &[Atom], save: &mut [Offset], linear_exec: bool) -> bool {
+    fn exec(
+        &self,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        scratch: &mut ExecScratch,
+    ) -> bool {
         if linear_exec {
-            return self.exec_linear(start, pat, save);
+            return self.exec_linear(start, pat, save, scratch);
         }
-        self.exec_backtracking(start, pat, save)
+        self.exec_backtracking(start, pat, save, scratch)
     }
 
     fn finds_unique_direct(
@@ -325,6 +366,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor_offset: u64,
         save: &mut [Offset],
     ) -> bool {
+        let mut exec_scratch = ExecScratch::default();
         let mut scratch = vec![0; required_slots];
         let mut found_once = false;
 
@@ -345,6 +387,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     &anchor,
                     anchor_len,
                     anchor_offset,
+                    &mut exec_scratch,
                 );
                 let Some(found_at) = matched else {
                     break;
@@ -375,6 +418,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         if start >= span.mapped.end {
             return None;
@@ -387,6 +431,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
+                scratch,
             );
         }
         if anchor_len < 4 {
@@ -399,6 +444,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                scratch,
             );
         }
         self.scan_span_quick_direct(
@@ -410,6 +456,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor,
             anchor_len,
             anchor_offset,
+            scratch,
         )
     }
 
@@ -420,9 +467,10 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         while cursor < range.end {
-            if self.exec(cursor, pat, save, linear_exec) {
+            if self.exec(cursor, pat, save, linear_exec, scratch) {
                 return Some(cursor);
             }
             cursor = cursor.checked_add(1)?;
@@ -440,6 +488,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let Some(bytes) = self.view.image().get(span.file.clone()) else {
             return self.scan_range_first_byte_direct(
@@ -450,6 +499,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 linear_exec,
                 anchor,
                 anchor_offset,
+                scratch,
             );
         };
         let anchor_start = start.checked_add(anchor_offset)?;
@@ -462,6 +512,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 linear_exec,
                 anchor,
                 anchor_offset,
+                scratch,
             );
         };
         let Some(start_index) = start_file.checked_sub(span.file.start) else {
@@ -473,6 +524,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 linear_exec,
                 anchor,
                 anchor_offset,
+                scratch,
             );
         };
         let Some(haystack) = bytes.get(start_index..) else {
@@ -484,6 +536,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 linear_exec,
                 anchor,
                 anchor_offset,
+                scratch,
             );
         };
 
@@ -501,7 +554,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let mapped_delta = Offset::try_from(anchor_index).ok()?;
             let anchor_cursor = span.mapped.start.checked_add(mapped_delta)?;
             let cursor = anchor_cursor.checked_sub(anchor_offset)?;
-            if self.exec(cursor, pat, save, linear_exec) {
+            if self.exec(cursor, pat, save, linear_exec, scratch) {
                 return Some(cursor);
             }
         }
@@ -517,11 +570,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         linear_exec: bool,
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_offset: u64,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let needle = anchor[0];
         let mut probe = cursor.checked_add(anchor_offset)?;
         while probe < range.end {
-            if self.view.read_u8(probe) == Some(needle) && self.exec(cursor, pat, save, linear_exec)
+            if self.view.read_u8(probe) == Some(needle)
+                && self.exec(cursor, pat, save, linear_exec, scratch)
             {
                 return Some(cursor);
             }
@@ -541,6 +596,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let Some(bytes) = self.view.image().get(span.file.clone()) else {
             return self.scan_range_quick_direct(
@@ -552,6 +608,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                scratch,
             );
         };
         let anchor_start = start.checked_add(anchor_offset)?;
@@ -565,6 +622,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                scratch,
             );
         };
         let Some(start_index) = start_file.checked_sub(span.file.start) else {
@@ -577,6 +635,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                scratch,
             );
         };
         let prefix = &anchor[..anchor_len];
@@ -590,6 +649,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                scratch,
             );
         };
         if haystack.len() < anchor_len {
@@ -616,7 +676,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 let mapped_delta = Offset::try_from(total_index).ok()?;
                 let cursor = span.mapped.start.checked_add(mapped_delta)?;
                 let start_cursor = cursor.checked_sub(anchor_offset)?;
-                if self.exec(start_cursor, pat, save, linear_exec) {
+                if self.exec(start_cursor, pat, save, linear_exec, scratch) {
                     return Some(start_cursor);
                 }
             }
@@ -636,6 +696,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let prefix = &anchor[..anchor_len];
         let window = u64::try_from(anchor_len).ok()?;
@@ -667,7 +728,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let jump = u64::from(jumps[usize::from(probe)].max(1));
             if probe == last
                 && prefix_matches_mapped(self.view, cursor, prefix)
-                && self.exec(cursor.checked_sub(anchor_offset)?, pat, save, linear_exec)
+                && self.exec(
+                    cursor.checked_sub(anchor_offset)?,
+                    pat,
+                    save,
+                    linear_exec,
+                    scratch,
+                )
             {
                 return cursor.checked_sub(anchor_offset);
             }
@@ -677,8 +744,15 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         None
     }
 
-    fn exec_linear(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
-        let mut work_save = save.to_vec();
+    fn exec_linear(
+        &self,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        scratch: &mut ExecScratch,
+    ) -> bool {
+        scratch.reset_from_save(save);
+        let work_save = &mut scratch.work_save;
         let mut cursor = start;
         let mut pc = 0usize;
         let mut fuzzy = None;
@@ -686,9 +760,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
         loop {
             let Some(atom) = pat.get(pc) else {
-                for (dst, src) in save.iter_mut().zip(work_save.iter()) {
-                    *dst = *src;
-                }
+                scratch.commit_to_save(save);
                 return true;
             };
 
@@ -891,21 +963,20 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         }
     }
 
-    fn exec_backtracking(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
-        #[derive(Copy, Clone)]
-        struct State {
-            cursor: Offset,
-            pc: usize,
-            fuzzy: Option<u8>,
-            calls_len: usize,
-            save_log_len: usize,
-        }
+    fn exec_backtracking(
+        &self,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        scratch: &mut ExecScratch,
+    ) -> bool {
+        scratch.reset_from_save(save);
+        let work_save = &mut scratch.work_save;
+        scratch.calls.clear();
+        scratch.save_log.clear();
+        scratch.stack.clear();
 
-        let mut work_save = save.to_vec();
-        let mut calls = Vec::new();
-        let mut save_log: Vec<(usize, Offset)> = Vec::new();
-        let mut stack = Vec::new();
-        stack.push(State {
+        scratch.stack.push(BacktrackState {
             cursor: start,
             pc: 0,
             fuzzy: None,
@@ -934,9 +1005,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             }
         }
 
-        while let Some(state) = stack.pop() {
-            calls.truncate(state.calls_len);
-            rollback(&mut work_save, &mut save_log, state.save_log_len);
+        while let Some(state) = scratch.stack.pop() {
+            scratch.calls.truncate(state.calls_len);
+            rollback(work_save, &mut scratch.save_log, state.save_log_len);
 
             let mut cursor = state.cursor;
             let mut pc = state.pc;
@@ -944,9 +1015,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let mut reader = ExecReader::new(self.view, cursor);
             loop {
                 let Some(atom) = pat.get(pc) else {
-                    for (dst, src) in save.iter_mut().zip(work_save.iter()) {
-                        *dst = *src;
-                    }
+                    scratch.commit_to_save(save);
                     return true;
                 };
 
@@ -970,7 +1039,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Save(slot) => {
-                        assign_save(&mut work_save, &mut save_log, usize::from(slot), cursor);
+                        assign_save(work_save, &mut scratch.save_log, usize::from(slot), cursor);
                         pc += 1;
                     }
                     Atom::Skip(n) => {
@@ -989,19 +1058,19 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         let max = u64::from(max);
                         for delta in ((min + 1)..=max).rev() {
                             if let Some(next_cursor) = cursor.checked_add(delta) {
-                                if stack.len() >= MAX_BACKTRACK_STATES {
+                                if scratch.stack.len() >= MAX_BACKTRACK_STATES {
                                     debug_assert!(
                                         false,
                                         "scanner backtracking stack must stay below MAX_BACKTRACK_STATES for bounded memory"
                                     );
                                     return false;
                                 }
-                                stack.push(State {
+                                scratch.stack.push(BacktrackState {
                                     cursor: next_cursor,
                                     pc: pc + 1,
                                     fuzzy,
-                                    calls_len: calls.len(),
-                                    save_log_len: save_log.len(),
+                                    calls_len: scratch.calls.len(),
+                                    save_log_len: scratch.save_log.len(),
                                 });
                             }
                         }
@@ -1015,11 +1084,11 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         let Some(resume_cursor) = cursor.checked_add(u64::from(skip)) else {
                             break;
                         };
-                        calls.push(resume_cursor);
+                        scratch.calls.push(resume_cursor);
                         pc += 1;
                     }
                     Atom::Pop => {
-                        let Some(resume_cursor) = calls.pop() else {
+                        let Some(resume_cursor) = scratch.calls.pop() else {
                             break;
                         };
                         cursor = resume_cursor;
@@ -1073,8 +1142,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             (value as i8) as i64 as u64,
                         );
@@ -1089,8 +1158,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             u64::from(value),
                         );
@@ -1105,8 +1174,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             value as i64 as u64,
                         );
@@ -1121,8 +1190,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             u64::from(value),
                         );
@@ -1137,8 +1206,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             value as i64 as u64,
                         );
@@ -1153,8 +1222,8 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             break;
                         };
                         assign_save(
-                            &mut work_save,
-                            &mut save_log,
+                            work_save,
+                            &mut scratch.save_log,
                             usize::from(slot),
                             u64::from(value),
                         );
@@ -1165,7 +1234,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Zero(slot) => {
-                        assign_save(&mut work_save, &mut save_log, usize::from(slot), 0);
+                        assign_save(work_save, &mut scratch.save_log, usize::from(slot), 0);
                         pc += 1;
                     }
                     Atom::Back(n) => {
@@ -1193,19 +1262,19 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         let Some(next_pc) = pc.checked_add(usize::from(skip)) else {
                             break;
                         };
-                        if stack.len() >= MAX_BACKTRACK_STATES {
+                        if scratch.stack.len() >= MAX_BACKTRACK_STATES {
                             debug_assert!(
                                 false,
                                 "scanner backtracking stack must stay below MAX_BACKTRACK_STATES for bounded memory"
                             );
                             return false;
                         }
-                        stack.push(State {
+                        scratch.stack.push(BacktrackState {
                             cursor,
                             pc: next_pc,
                             fuzzy,
-                            calls_len: calls.len(),
-                            save_log_len: save_log.len(),
+                            calls_len: scratch.calls.len(),
+                            save_log_len: scratch.save_log.len(),
                         });
                         pc += 1;
                     }
@@ -1240,6 +1309,7 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     anchor: [u8; ANCHOR_MAX_LEN],
     anchor_len: usize,
     anchor_offset: u64,
+    scratch: ExecScratch,
 }
 
 impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
@@ -1273,13 +1343,16 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn scan_range_linear(
-        &self,
+        &mut self,
         range: Range<Offset>,
         mut cursor: Offset,
         save: &mut [Offset],
     ) -> Option<Offset> {
         while cursor < range.end {
-            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
+            if self
+                .scanner
+                .exec(cursor, self.pat, save, self.linear_exec, &mut self.scratch)
+            {
                 return Some(cursor);
             }
             let next = cursor.checked_add(1)?;
@@ -1289,7 +1362,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn scan_span_first_byte(
-        &self,
+        &mut self,
         span: &CodeSpan,
         start: Offset,
         save: &mut [Offset],
@@ -1338,7 +1411,10 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
                 return None;
             };
-            if self.scanner.exec(cursor, self.pat, save, self.linear_exec) {
+            if self
+                .scanner
+                .exec(cursor, self.pat, save, self.linear_exec, &mut self.scratch)
+            {
                 return Some(cursor);
             }
         }
@@ -1346,7 +1422,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn scan_range_first_byte(
-        &self,
+        &mut self,
         range: Range<Offset>,
         mut cursor: Offset,
         save: &mut [Offset],
@@ -1357,7 +1433,9 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         };
         while probe < range.end {
             if self.scanner.view.read_u8(probe) == Some(needle)
-                && self.scanner.exec(cursor, self.pat, save, self.linear_exec)
+                && self
+                    .scanner
+                    .exec(cursor, self.pat, save, self.linear_exec, &mut self.scratch)
             {
                 return Some(cursor);
             }
@@ -1368,7 +1446,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn scan_range_quick(
-        &self,
+        &mut self,
         range: Range<Offset>,
         start: Offset,
         save: &mut [Offset],
@@ -1412,6 +1490,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                     self.pat,
                     save,
                     self.linear_exec,
+                    &mut self.scratch,
                 )
             {
                 return cursor.checked_sub(self.anchor_offset);
@@ -1423,7 +1502,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 
     fn scan_span_quick(
-        &self,
+        &mut self,
         span: &CodeSpan,
         start: Offset,
         save: &mut [Offset],
@@ -1482,10 +1561,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 let Some(start_cursor) = cursor.checked_sub(self.anchor_offset) else {
                     return None;
                 };
-                if self
-                    .scanner
-                    .exec(start_cursor, self.pat, save, self.linear_exec)
-                {
+                if self.scanner.exec(
+                    start_cursor,
+                    self.pat,
+                    save,
+                    self.linear_exec,
+                    &mut self.scratch,
+                ) {
                     return Some(start_cursor);
                 }
             }

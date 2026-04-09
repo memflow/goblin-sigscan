@@ -59,3 +59,15 @@ Run the goblin-lite vs pelite PE benchmark:
 ```bash
 cargo bench -p goblin-lite --bench pelite_compare
 ```
+
+Print goblin-lite vs pelite benchmark ratios:
+
+```bash
+scripts/bench-pelite-summary.sh
+```
+
+Show only first-match ratios:
+
+```bash
+scripts/bench-pelite-summary.sh --group first-match
+```
