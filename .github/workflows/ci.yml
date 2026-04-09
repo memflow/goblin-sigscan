@@ -21,6 +21,9 @@ jobs:
           toolchain: 1.88.0
           components: clippy
 
+      - name: Compile all workspace targets
+        run: cargo check --workspace --all-targets --all-features
+
       - name: Run clippy (workspace)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::all
 
