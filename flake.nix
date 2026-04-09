@@ -32,7 +32,7 @@
             pkgs.cargo-flamegraph
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.linuxPackages.perf
+            pkgs.perf
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
