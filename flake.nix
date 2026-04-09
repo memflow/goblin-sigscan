@@ -29,6 +29,10 @@
           packages = [
             rustToolchain
             pkgs.gnuplot
+            pkgs.cargo-flamegraph
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.linuxPackages.perf
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
