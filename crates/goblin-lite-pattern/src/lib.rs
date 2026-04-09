@@ -4,50 +4,9 @@
 //! executed by scanner implementations.
 //! For scanner-facing onboarding and end-to-end examples, see
 //! `goblin_lite` crate docs: <https://docs.rs/goblin-lite/latest/goblin_lite/>.
+//! The canonical syntax tutorial lives on [`parse`].
 //!
-//! # Onboarding
-//!
-//! The parser accepts a compact pattern language inspired by pelite.
-//!
-//! ## Core tokens
-//!
-//! - `48 8B 05`: literal bytes (hex pairs)
-//! - `?` / `??`: wildcard byte
-//! - `'`: capture current cursor into the next save slot
-//! - `%`: follow signed rel8 jump target
-//! - `$`: follow signed rel32 jump target
-//! - `i1/i2/i4`: read signed immediate into a save slot
-//! - `u1/u2/u4`: read unsigned immediate into a save slot
-//! - `z`: write zero into a new save slot
-//! - `@4`: assert cursor alignment (`1 << 4` bytes)
-//! - `[N]`: skip exactly `N` bytes
-//! - `[A-B]`: skip a byte count in the inclusive range `A..=B-1`
-//! - `(A | B)`: alternatives with backtracking
-//! - `"text"`: literal ASCII bytes
-//!
-//! ## Save-slot model
-//!
-//! [`parse`] prepends an implicit `Save(0)` instruction. For parsed patterns,
-//! slot `0` therefore holds the match base cursor. Additional captures are
-//! appended in encounter order.
-//!
-//! Use [`save_len`] to allocate enough slots for scanner execution.
-//!
-//! ```
-//! use goblin_lite_pattern::{Atom, parse, save_len};
-//!
-//! let atoms = parse("e8 ${'}")?;
-//! assert_eq!(atoms.first(), Some(&Atom::Save(0)));
-//! assert!(save_len(&atoms) >= 2);
-//! # Ok::<(), goblin_lite_pattern::ParsePatError>(())
-//! ```
-//!
-//! ## Parse failures
-//!
-//! Invalid syntax returns [`ParsePatError`] with both a [`PatError`] kind and
-//! byte position so callers can produce helpful diagnostics.
-//!
-//! Cross reference:
+//! Cross references:
 //! - scanner runtime APIs: `goblin_lite::Scanner` and `goblin_lite::Matches`
 //! - prepared scanning path: `goblin_lite::PreparedPattern`
 
@@ -199,38 +158,104 @@ pub fn save_len(pat: &[Atom]) -> usize {
 /// Parsing injects an implicit `Save(0)` at the beginning so slot `0` always
 /// represents the match base cursor for parsed patterns.
 ///
-/// This function is the main entry point for runtime pattern text.
+/// This is the main runtime entry point for pattern text.
 ///
-/// # Language overview
+/// # Syntax tutorial
 ///
-/// ## Literal bytes and wildcards
+/// Following are examples of the syntax supported by `goblin-lite`.
 ///
-/// - `48 8B 05` matches exact bytes.
-/// - `?` / `??` matches any single byte.
-/// - Hex is case-insensitive and whitespace is ignored.
+/// ```text
+/// 55 89 e5 83 ? ec
+/// ```
 ///
-/// ## Captures and reads
+/// Case-insensitive hexadecimal pairs match exact bytes and question marks are
+/// wildcard bytes.
 ///
-/// - `'` captures current cursor into a save slot (`Atom::Save`).
-/// - `u1/u2/u4` reads unsigned little-endian values into a save slot.
-/// - `i1/i2/i4` reads signed little-endian values (sign-extended into `u64`).
-/// - `z` writes `0` into a new save slot.
+/// A single `?` matches a full byte. Partial nibble masks are not currently
+/// supported.
 ///
-/// ## Cursor movement and control flow
+/// Whitespace has no semantic meaning and is only for readability.
 ///
-/// - `[N]` skips exactly `N` bytes.
-/// - `[A-B]` compiles to `SkipRange(A, B - 1)`.
-/// - `%` follows a signed rel8 jump.
-/// - `$` follows a signed rel32 jump.
-/// - `%{ ... }` / `${ ... }` follow jump target, run subpattern, then resume.
-/// - `(A | B)` compiles alternation using `Case`/`Break` atoms.
-/// - `@4` asserts cursor alignment to `1 << 4` bytes.
+/// ```text
+/// b9 ' 37 13 00 00
+/// ```
 ///
-/// ## Strings
+/// A single quote (`'`) stores the current cursor into the next save slot.
 ///
-/// Quoted strings emit literal ASCII bytes:
+/// Save slot ordering is deterministic:
 ///
-/// - `"MZ"` -> `Byte(b'M'), Byte(b'Z')`
+/// - `save[0]` is always the overall match start (`Save(0)` injected by parser)
+/// - `save[1..]` are captures in order of appearance (`'`, `i*`, `u*`, `z`, ...)
+///
+/// ```text
+/// b8 [16] 50 [13-42] ff
+/// ```
+///
+/// Bracket operands skip bytes:
+///
+/// - `[N]` skips exactly `N` bytes
+/// - `[A-B]` tries the range non-greedily (smallest skip first)
+///
+/// Internally `[A-B]` compiles to `SkipRange(A, B - 1)`.
+///
+/// ```text
+/// 31 c0 74 % ' c3
+/// e8 $ ' 31 c0 c3
+/// ```
+///
+/// `%` follows a signed rel8 target and `$` follows a signed rel32 target.
+///
+/// This composes with captures and read ops to recover referenced addresses and
+/// values without manual offset arithmetic.
+///
+/// ```text
+/// e8 $ { ' } 83 f0 5c c3
+/// ```
+///
+/// Curly braces must follow `%` or `$`. The sub-pattern inside `{...}` runs at
+/// the jump destination. After it succeeds, scanning returns to the original
+/// stream position, skips jump bytes, and continues.
+///
+/// ```text
+/// e8 $ @4
+/// ```
+///
+/// `@n` checks alignment at that point in the scan. Alignment is `1 << n`
+/// bytes, so `@4` means 16-byte alignment.
+///
+/// ```text
+/// e8 i1 a0 u4 z
+/// ```
+///
+/// `i`/`u` read memory into save slots and advance the cursor by operand size:
+///
+/// - signed reads: `i1`, `i2`, `i4`
+/// - unsigned reads: `u1`, `u2`, `u4`
+/// - `z` writes a literal zero to a fresh slot
+///
+/// ```text
+/// 83 c0 2a ( 6a ? | 68 ? ? ? ? ) e8
+/// ```
+///
+/// Parentheses define alternatives separated by `|`. Arms are attempted from
+/// left to right and the pattern fails only if every arm fails.
+///
+/// ```text
+/// b8 "MZ" 00
+/// ```
+///
+/// Double-quoted strings emit literal byte sequences.
+///
+/// ## Pelite compatibility notes
+///
+/// `goblin-lite` intentionally tracks a practical subset of pelite syntax.
+///
+/// - Supported: hex bytes, `?`, `'`, `%`, `$`, `{...}`, `[N]`, `[A-B]`, `@n`,
+///   `i1/i2/i4`, `u1/u2/u4`, `z`, alternation, and strings.
+/// - Not yet supported: absolute-pointer follow (`*`).
+///
+/// If you rely on `*` in pelite patterns today, rewrite patterns around `%`/`$`
+/// plus explicit reads/captures, or parse that address in a second step.
 ///
 /// # Save-slot semantics
 ///
@@ -289,6 +314,36 @@ pub fn save_len(pat: &[Atom]) -> usize {
 /// - [`PatError::GroupOperand`]
 /// - [`PatError::PatternTooLong`]
 /// - [`PatError::PatternTooComplex`]
+///
+/// # Quick compile-checked examples
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse, save_len};
+///
+/// let atoms = parse("48 8B ? ? ? ? 48 89")?;
+/// assert_eq!(atoms.first(), Some(&Atom::Save(0)));
+/// assert_eq!(save_len(&atoms), 1);
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse, save_len};
+///
+/// let atoms = parse("e8 ${'}")?;
+/// assert!(matches!(atoms[0], Atom::Save(0)));
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Jump4)));
+/// assert!(save_len(&atoms) >= 2);
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
+///
+/// ```
+/// use goblin_lite_pattern::{Atom, parse};
+///
+/// let atoms = parse("(85 c0 | 48 85 c0)")?;
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Case(_))));
+/// assert!(atoms.iter().any(|atom| matches!(atom, Atom::Break(_))));
+/// # Ok::<(), goblin_lite_pattern::ParsePatError>(())
+/// ```
 pub fn parse(pat: &str) -> Result<Pattern, ParsePatError> {
     if pat.len() > MAX_PATTERN_SOURCE_BYTES {
         return Err(ParsePatError {

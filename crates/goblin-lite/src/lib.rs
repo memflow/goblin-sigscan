@@ -99,21 +99,13 @@
 //! }
 //! ```
 //!
-//! ## 5) Syntax quick reference
+//! ## 5) Syntax tutorial
 //!
-//! - Literal bytes: `48 8B 05`
-//! - Wildcards: `?` / `??`
-//! - Cursor capture: `'`
-//! - Relative jumps: `%` (rel8), `$` (rel32)
-//! - Read immediates: `i1 i2 i4 u1 u2 u4`
-//! - Skip: `[5]`, range skip: `[3-10]`
-//! - Alternation/grouping: `(AA BB | CC DD)`
-//! - Alignment check: `@4`
-//! - Jump-follow sub-pattern: `${...}` / `%{...}`
-//! - String bytes: `"MZ"`
+//! For full syntax semantics and examples, use the canonical parser tutorial:
+//! [`goblin_lite_pattern::parse`].
 //!
-//! For full syntax details and parser-specific behavior, see [`mod@crate::pattern`]
-//! and [`goblin_lite_pattern::parse`].
+//! The `goblin_lite::pattern` module is a re-export convenience surface:
+//! [`mod@crate::pattern`].
 //!
 //! ## Common pitfalls
 //!
