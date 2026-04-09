@@ -103,6 +103,8 @@ pub enum Atom {
     Jump1,
     /// Follows a signed 4-byte relative jump.
     Jump4,
+    /// Follows an absolute pointer.
+    Ptr,
     /// Reads and sign-extends the byte under the cursor, writes to slot, advances by 1.
     ReadI8(u8),
     /// Reads and zero-extends the byte under the cursor, writes to slot, advances by 1.
@@ -212,7 +214,7 @@ pub fn save_len(pat: &[Atom]) -> usize {
 /// e8 $ { ' } 83 f0 5c c3
 /// ```
 ///
-/// Curly braces must follow `%` or `$`. The sub-pattern inside `{...}` runs at
+/// Curly braces must follow `%`, `$`, or `*`. The sub-pattern inside `{...}` runs at
 /// the jump destination. After it succeeds, scanning returns to the original
 /// stream position, skips jump bytes, and continues.
 ///
@@ -250,12 +252,8 @@ pub fn save_len(pat: &[Atom]) -> usize {
 ///
 /// `goblin-lite` intentionally tracks a practical subset of pelite syntax.
 ///
-/// - Supported: hex bytes, `?`, `'`, `%`, `$`, `{...}`, `[N]`, `[A-B]`, `@n`,
+/// - Supported: hex bytes, `?`, `'`, `%`, `$`, `*`, `{...}`, `[N]`, `[A-B]`, `@n`,
 ///   `i1/i2/i4`, `u1/u2/u4`, `z`, alternation, and strings.
-/// - Not yet supported: absolute-pointer follow (`*`).
-///
-/// If you rely on `*` in pelite patterns today, rewrite patterns around `%`/`$`
-/// plus explicit reads/captures, or parse that address in a second step.
 ///
 /// # Save-slot semantics
 ///
@@ -430,6 +428,7 @@ impl<'a> Parser<'a> {
                 }
                 '%' => result.push(Atom::Jump1),
                 '$' => result.push(Atom::Jump4),
+                '*' => result.push(Atom::Ptr),
                 '"' => {
                     let mut closed = false;
                     while let Some((_, next)) = self.bump() {
@@ -474,6 +473,10 @@ impl<'a> Parser<'a> {
                         Atom::Jump4 => {
                             *last = Atom::Push(4);
                             Atom::Jump4
+                        }
+                        Atom::Ptr => {
+                            *last = Atom::Push(0);
+                            Atom::Ptr
                         }
                         _ => {
                             return Err(ParsePatError {
@@ -828,6 +831,31 @@ mod tests {
                 Atom::Byte(0x48),
                 Atom::Byte(0x89),
                 Atom::Byte(0x42),
+            ])
+        );
+
+        assert_eq!(
+            parse("68*'31c0c3"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Byte(0x68),
+                Atom::Ptr,
+                Atom::Save(1),
+                Atom::Byte(0x31),
+                Atom::Byte(0xc0),
+                Atom::Byte(0xc3),
+            ])
+        );
+
+        assert_eq!(
+            parse("*{'90}"),
+            Ok(vec![
+                Atom::Save(0),
+                Atom::Push(0),
+                Atom::Ptr,
+                Atom::Save(1),
+                Atom::Byte(0x90),
+                Atom::Pop,
             ])
         );
 

@@ -377,4 +377,10 @@ impl BinaryView for PeFile<'_> {
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
         self.rva_to_file_offset(offset)
     }
+
+    #[inline]
+    fn follow_pointer_target(&self, raw: Offset) -> Option<Offset> {
+        let rva = self.va_to_rva(raw)?;
+        self.rva_to_file_offset(rva).map(|_| rva)
+    }
 }

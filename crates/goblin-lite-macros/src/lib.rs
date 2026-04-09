@@ -60,6 +60,7 @@ fn atom_to_tokens(atom: Atom) -> String {
         Atom::Pop => "Pop".to_owned(),
         Atom::Jump1 => "Jump1".to_owned(),
         Atom::Jump4 => "Jump4".to_owned(),
+        Atom::Ptr => "Ptr".to_owned(),
         Atom::ReadI8(slot) => format!("ReadI8({slot})"),
         Atom::ReadU8(slot) => format!("ReadU8({slot})"),
         Atom::ReadI16(slot) => format!("ReadI16({slot})"),

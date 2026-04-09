@@ -53,7 +53,7 @@ fn classify_shape(atoms: &[Atom]) -> PatternShape {
     for atom in atoms {
         match atom {
             Atom::Byte(_) => shape.bytes += 1,
-            Atom::Jump1 | Atom::Jump4 => {
+            Atom::Jump1 | Atom::Jump4 | Atom::Ptr => {
                 shape.jumps += 1;
                 has_jump = true;
             }
@@ -81,6 +81,7 @@ fn classify_shape(atoms: &[Atom]) -> PatternShape {
             | Atom::Skip(_)
             | Atom::Jump1
             | Atom::Jump4
+            | Atom::Ptr
             | Atom::Nop => {}
             _ => shape.tiny_literal_jump = false,
         }

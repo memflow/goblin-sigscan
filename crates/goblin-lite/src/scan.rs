@@ -101,6 +101,16 @@ pub trait BinaryView {
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize>;
 
     #[inline]
+    fn pointer_size_bytes(&self) -> u8 {
+        8
+    }
+
+    #[inline]
+    fn follow_pointer_target(&self, raw: Offset) -> Option<Offset> {
+        self.mapped_to_file_offset(raw).map(|_| raw)
+    }
+
+    #[inline]
     fn code_ranges(&self) -> impl Iterator<Item = &Range<Offset>> + '_ {
         self.code_spans().iter().map(|span| &span.mapped)
     }
@@ -135,6 +145,15 @@ pub trait BinaryView {
     #[inline]
     fn read_u32(&self, offset: Offset) -> Option<u32> {
         Some(u32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    #[inline]
+    fn read_pointer_raw(&self, offset: Offset) -> Option<Offset> {
+        match self.pointer_size_bytes() {
+            4 => self.read_u32(offset).map(Offset::from),
+            8 => Some(u64::from_le_bytes(self.read_array::<8>(offset)?)),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -193,6 +212,15 @@ impl<'a, B: BinaryView> ExecReader<'a, B> {
     #[inline]
     fn read_u32(&mut self, offset: Offset) -> Option<u32> {
         Some(u32::from_le_bytes(self.read_array::<4>(offset)?))
+    }
+
+    #[inline]
+    fn read_pointer_raw(&mut self, offset: Offset, width: u8) -> Option<Offset> {
+        match width {
+            4 => self.read_u32(offset).map(Offset::from),
+            8 => Some(u64::from_le_bytes(self.read_array::<8>(offset)?)),
+            _ => None,
+        }
     }
 
     fn read_array<const N: usize>(&mut self, offset: Offset) -> Option<[u8; N]> {
@@ -812,7 +840,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     pc += 1;
                 }
                 Atom::Skip(n) => {
-                    cursor = match cursor.checked_add(u64::from(n)) {
+                    let skip = if n == 0 {
+                        u64::from(self.view.pointer_size_bytes())
+                    } else {
+                        u64::from(n)
+                    };
+                    cursor = match cursor.checked_add(skip) {
                         Some(next) => next,
                         None => return false,
                     };
@@ -860,6 +893,17 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             None => return false,
                         }
                     };
+                    pc += 1;
+                }
+                Atom::Ptr => {
+                    let Some(raw) = reader.read_pointer_raw(cursor, self.view.pointer_size_bytes())
+                    else {
+                        return false;
+                    };
+                    let Some(next) = self.view.follow_pointer_target(raw) else {
+                        return false;
+                    };
+                    cursor = next;
                     pc += 1;
                 }
                 Atom::ReadI8(slot) => {
@@ -1065,7 +1109,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Skip(n) => {
-                        let Some(next) = cursor.checked_add(u64::from(n)) else {
+                        let skip = if n == 0 {
+                            u64::from(self.view.pointer_size_bytes())
+                        } else {
+                            u64::from(n)
+                        };
+                        let Some(next) = cursor.checked_add(skip) else {
                             break;
                         };
                         cursor = next;
@@ -1103,7 +1152,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                         pc += 1;
                     }
                     Atom::Push(skip) => {
-                        let Some(resume_cursor) = cursor.checked_add(u64::from(skip)) else {
+                        let skip = if skip == 0 {
+                            u64::from(self.view.pointer_size_bytes())
+                        } else {
+                            u64::from(skip)
+                        };
+                        let Some(resume_cursor) = cursor.checked_add(skip) else {
                             break;
                         };
                         scratch.calls.push(resume_cursor);
@@ -1157,6 +1211,18 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                             };
                             cursor = next;
                         }
+                        pc += 1;
+                    }
+                    Atom::Ptr => {
+                        let Some(raw) =
+                            reader.read_pointer_raw(cursor, self.view.pointer_size_bytes())
+                        else {
+                            break;
+                        };
+                        let Some(next) = self.view.follow_pointer_target(raw) else {
+                            break;
+                        };
+                        cursor = next;
                         pc += 1;
                     }
                     Atom::ReadI8(slot) => {
@@ -1868,6 +1934,60 @@ mod tests {
 
         assert!(scanner.matches_code(&pat).next(&mut save));
         assert_eq!(save[0], 0);
+    }
+
+    #[test]
+    fn ptr_follows_mapped_target_and_captures_destination() {
+        let mut bytes = vec![0x68];
+        bytes.extend_from_slice(&12u64.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0]);
+        bytes.extend_from_slice(&[0x31, 0xc0, 0xc3]);
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Byte(0x68),
+            Atom::Ptr,
+            Atom::Save(1),
+            Atom::Byte(0x31),
+            Atom::Byte(0xc0),
+            Atom::Byte(0xc3),
+        ];
+        let mut save = [0u64; 2];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 0);
+        assert_eq!(save[1], 12);
+    }
+
+    #[test]
+    fn ptr_fails_when_target_is_not_mapped() {
+        let mut bytes = vec![0x68];
+        bytes.extend_from_slice(&1024u64.to_le_bytes());
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = [Atom::Save(0), Atom::Byte(0x68), Atom::Ptr, Atom::Byte(0x90)];
+        let mut save = [0u64; 1];
+
+        assert!(!scanner.matches_code(&pat).next(&mut save));
+    }
+
+    #[test]
+    fn push_zero_uses_pointer_width_for_resume_cursor() {
+        let view = TestView::new(&[0xaa, 0, 0, 0, 0, 0, 0, 0, 0x55]);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Push(0),
+            Atom::Byte(0xaa),
+            Atom::Pop,
+            Atom::Save(1),
+            Atom::Byte(0x55),
+        ];
+        let mut save = [0u64; 2];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[1], 8);
     }
 
     #[test]
