@@ -8,6 +8,51 @@ const MAX_BACKTRACK_STATES: usize = 1_000_000;
 const PREFIX_BUF_LEN: usize = 16;
 const ANCHOR_MAX_LEN: usize = 4;
 
+#[derive(Copy, Clone, Debug)]
+struct PatternPlan {
+    required_slots: usize,
+    linear_exec: bool,
+    anchor: [u8; ANCHOR_MAX_LEN],
+    anchor_len: usize,
+    anchor_offset: u64,
+}
+
+/// Reusable scanner metadata and atoms for repeated scans.
+#[derive(Clone, Debug)]
+pub struct PreparedPattern {
+    atoms: Vec<Atom>,
+    required_slots: usize,
+    linear_exec: bool,
+    anchor: [u8; ANCHOR_MAX_LEN],
+    anchor_len: usize,
+    anchor_offset: u64,
+}
+
+impl PreparedPattern {
+    /// Builds a prepared pattern from parsed atoms.
+    pub fn from_atoms(atoms: Vec<Atom>) -> Self {
+        let plan = analyze_pattern(&atoms);
+        Self {
+            atoms,
+            required_slots: plan.required_slots,
+            linear_exec: plan.linear_exec,
+            anchor: plan.anchor,
+            anchor_len: plan.anchor_len,
+            anchor_offset: plan.anchor_offset,
+        }
+    }
+
+    /// Returns the parsed atoms backing this prepared pattern.
+    pub fn atoms(&self) -> &[Atom] {
+        &self.atoms
+    }
+
+    /// Returns the minimum save-slot buffer length required for scanning.
+    pub fn required_slots(&self) -> usize {
+        self.required_slots
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeSpan {
     pub mapped: Range<Offset>,
@@ -181,20 +226,57 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         !matches.next(&mut scratch)
     }
 
+    /// Returns the minimum required save-slot buffer length for `pat`.
+    pub fn required_slots(&self, pat: &[Atom]) -> usize {
+        save_len(pat)
+    }
+
+    /// Prepares reusable scanner metadata for a parsed pattern.
+    pub fn prepare_pattern(&self, pat: &[Atom]) -> PreparedPattern {
+        PreparedPattern::from_atoms(pat.to_vec())
+    }
+
+    /// Returns `true` only when a prepared pattern has exactly one code match.
+    pub fn finds_prepared(&self, pat: &PreparedPattern, save: &mut [Offset]) -> bool {
+        debug_assert!(
+            save.len() >= pat.required_slots,
+            "caller-provided save buffer must cover all slots referenced by the prepared pattern"
+        );
+        let mut matches = self.matches_prepared(pat);
+        if !matches.next(save) {
+            return false;
+        }
+
+        let mut scratch = vec![0; pat.required_slots];
+        !matches.next(&mut scratch)
+    }
+
+    /// Returns an iterator-like matcher for a prepared pattern.
+    pub fn matches_prepared<'p>(&self, pat: &'p PreparedPattern) -> Matches<'a, 'p, B> {
+        Matches {
+            scanner: Scanner { view: self.view },
+            pat: &pat.atoms,
+            linear_exec: pat.linear_exec,
+            range_index: 0,
+            cursor: None,
+            anchor: pat.anchor,
+            anchor_len: pat.anchor_len,
+            anchor_offset: pat.anchor_offset,
+        }
+    }
+
     /// Returns an iterator-like matcher for all code-range matches.
     pub fn matches_code<'p>(&self, pat: &'p [Atom]) -> Matches<'a, 'p, B> {
-        let (prefix, prefix_len) = build_prefix(pat);
-        let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
-        let linear_exec = is_linear_pattern(pat);
+        let plan = analyze_pattern(pat);
         Matches {
             scanner: Scanner { view: self.view },
             pat,
-            linear_exec,
+            linear_exec: plan.linear_exec,
             range_index: 0,
             cursor: None,
-            anchor,
-            anchor_len,
-            anchor_offset,
+            anchor: plan.anchor,
+            anchor_len: plan.anchor_len,
+            anchor_offset: plan.anchor_offset,
         }
     }
 
@@ -1056,6 +1138,20 @@ fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
     (prefix, len)
 }
 
+fn analyze_pattern(pat: &[Atom]) -> PatternPlan {
+    let required_slots = save_len(pat);
+    let linear_exec = is_linear_pattern(pat);
+    let (prefix, prefix_len) = build_prefix(pat);
+    let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
+    PatternPlan {
+        required_slots,
+        linear_exec,
+        anchor,
+        anchor_len,
+        anchor_offset,
+    }
+}
+
 /// Chooses the best fixed-size literal anchor window from the prefix.
 ///
 /// The scanner uses this anchor for candidate filtering before running full
@@ -1184,7 +1280,7 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern,
+        BinaryView, CodeSpan, Offset, PreparedPattern, Scanner, build_prefix, is_linear_pattern,
         is_tiny_literal_jump_pattern, select_anchor, span_index_for_offset,
     };
     use crate::pattern::Atom;
@@ -1298,6 +1394,32 @@ mod tests {
         let mut save = [0u64; 2];
 
         assert!(!scanner.finds_code(&pat, &mut save));
+    }
+
+    #[test]
+    fn prepared_pattern_exposes_required_slots() {
+        let pat = vec![
+            Atom::Save(0),
+            Atom::Byte(0xaa),
+            Atom::Save(2),
+            Atom::Byte(0xbb),
+        ];
+        let prepared = PreparedPattern::from_atoms(pat);
+        assert_eq!(prepared.required_slots(), 3);
+    }
+
+    #[test]
+    fn matches_prepared_matches_runtime_behavior() {
+        let view = TestView::new(&[0x00, 0xaa, 0xbb]);
+        let scanner = Scanner::new(&view);
+        let pat = [Atom::Save(0), Atom::Byte(0xaa), Atom::Byte(0xbb)];
+        let prepared = scanner.prepare_pattern(&pat);
+
+        let mut save_runtime = [0u64; 1];
+        let mut save_prepared = [0u64; 1];
+        assert!(scanner.matches_code(&pat).next(&mut save_runtime));
+        assert!(scanner.matches_prepared(&prepared).next(&mut save_prepared));
+        assert_eq!(save_runtime, save_prepared);
     }
 
     #[test]
