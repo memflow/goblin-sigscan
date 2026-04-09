@@ -45,3 +45,7 @@ Huge thanks to casualx and the pelite project:
 
 - <https://github.com/CasualX/pelite>
 - <https://docs.rs/pelite/latest/pelite/pattern/>
+
+## License
+
+Licensed under the MIT License. See `LICENSE` for details.
