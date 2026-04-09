@@ -18,6 +18,12 @@ Print a compact Criterion summary table:
 scripts/bench-summary.sh --mode finds-prepared
 ```
 
+Run local perf smoke check against a saved baseline:
+
+```bash
+scripts/perf-smoke.sh --baseline scanner-main --mode matches
+```
+
 Save a baseline (run on checkout A):
 
 ```bash

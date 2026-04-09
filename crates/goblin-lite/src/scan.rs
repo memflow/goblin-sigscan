@@ -192,6 +192,20 @@ impl<'a, B: BinaryView> ExecReader<'a, B> {
             return Some(index);
         }
 
+        if let Some(index) = self.span_index
+            && let Some(current) = self.view.code_spans().get(index)
+            && offset >= current.mapped.end
+            && let Some(next_index) = index.checked_add(1)
+            && self
+                .view
+                .code_spans()
+                .get(next_index)
+                .is_some_and(|span| span.mapped.contains(&offset))
+        {
+            self.span_index = Some(next_index);
+            return Some(next_index);
+        }
+
         let index = span_index_for_offset(self.view.code_spans(), offset)?;
         self.span_index = Some(index);
         Some(index)
@@ -212,18 +226,21 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
     /// Returns `true` only when the pattern has exactly one code match.
     pub fn finds_code(&self, pat: &[Atom], save: &mut [Offset]) -> bool {
-        let required_slots = save_len(pat);
+        let plan = analyze_pattern(pat);
+        let required_slots = plan.required_slots;
         debug_assert!(
             save.len() >= required_slots,
             "caller-provided save buffer must cover all slots referenced by the pattern"
         );
-        let mut matches = self.matches_code(pat);
-        if !matches.next(save) {
-            return false;
-        }
-
-        let mut scratch = vec![0; required_slots];
-        !matches.next(&mut scratch)
+        self.finds_unique_direct(
+            pat,
+            plan.linear_exec,
+            plan.required_slots,
+            plan.anchor,
+            plan.anchor_len,
+            plan.anchor_offset,
+            save,
+        )
     }
 
     /// Returns the minimum required save-slot buffer length for `pat`.
@@ -251,13 +268,15 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             save.len() >= pat.required_slots,
             "caller-provided save buffer must cover all slots referenced by the prepared pattern"
         );
-        let mut matches = self.matches_prepared(pat);
-        if !matches.next(save) {
-            return false;
-        }
-
-        let mut scratch = vec![0; pat.required_slots];
-        !matches.next(&mut scratch)
+        self.finds_unique_direct(
+            &pat.atoms,
+            pat.linear_exec,
+            pat.required_slots,
+            pat.anchor,
+            pat.anchor_len,
+            pat.anchor_offset,
+            save,
+        )
     }
 
     /// Returns an iterator-like matcher for a prepared pattern.
@@ -294,6 +313,368 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             return self.exec_linear(start, pat, save);
         }
         self.exec_backtracking(start, pat, save)
+    }
+
+    fn finds_unique_direct(
+        &self,
+        pat: &[Atom],
+        linear_exec: bool,
+        required_slots: usize,
+        anchor: [u8; ANCHOR_MAX_LEN],
+        anchor_len: usize,
+        anchor_offset: u64,
+        save: &mut [Offset],
+    ) -> bool {
+        let mut scratch = vec![0; required_slots];
+        let mut found_once = false;
+
+        for span in self.view.code_spans() {
+            let mut cursor = span.mapped.start;
+            loop {
+                let save_buf: &mut [Offset] = if found_once {
+                    &mut scratch
+                } else {
+                    &mut save[..required_slots]
+                };
+                let matched = self.find_next_direct_in_span(
+                    span,
+                    cursor,
+                    pat,
+                    save_buf,
+                    linear_exec,
+                    &anchor,
+                    anchor_len,
+                    anchor_offset,
+                );
+                let Some(found_at) = matched else {
+                    break;
+                };
+
+                if found_once {
+                    return false;
+                }
+                found_once = true;
+
+                let Some(next) = found_at.checked_add(1) else {
+                    break;
+                };
+                cursor = next;
+            }
+        }
+
+        found_once
+    }
+
+    fn find_next_direct_in_span(
+        &self,
+        span: &CodeSpan,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        anchor: &[u8; ANCHOR_MAX_LEN],
+        anchor_len: usize,
+        anchor_offset: u64,
+    ) -> Option<Offset> {
+        if start >= span.mapped.end {
+            return None;
+        }
+
+        if anchor_len == 0 {
+            return self.scan_range_linear_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+            );
+        }
+        if anchor_len < 4 {
+            return self.scan_span_first_byte_direct(
+                span,
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_len,
+                anchor_offset,
+            );
+        }
+        self.scan_span_quick_direct(
+            span,
+            start,
+            pat,
+            save,
+            linear_exec,
+            anchor,
+            anchor_len,
+            anchor_offset,
+        )
+    }
+
+    fn scan_range_linear_direct(
+        &self,
+        range: Range<Offset>,
+        mut cursor: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+    ) -> Option<Offset> {
+        while cursor < range.end {
+            if self.exec(cursor, pat, save, linear_exec) {
+                return Some(cursor);
+            }
+            cursor = cursor.checked_add(1)?;
+        }
+        None
+    }
+
+    fn scan_span_first_byte_direct(
+        &self,
+        span: &CodeSpan,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        anchor: &[u8; ANCHOR_MAX_LEN],
+        anchor_len: usize,
+        anchor_offset: u64,
+    ) -> Option<Offset> {
+        let Some(bytes) = self.view.image().get(span.file.clone()) else {
+            return self.scan_range_first_byte_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_offset,
+            );
+        };
+        let anchor_start = start.checked_add(anchor_offset)?;
+        let Some(start_file) = mapped_to_file_offset(span, anchor_start) else {
+            return self.scan_range_first_byte_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_offset,
+            );
+        };
+        let Some(start_index) = start_file.checked_sub(span.file.start) else {
+            return self.scan_range_first_byte_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_offset,
+            );
+        };
+        let Some(haystack) = bytes.get(start_index..) else {
+            return self.scan_range_first_byte_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_offset,
+            );
+        };
+
+        let needle = anchor[0];
+        let anchor_window = &anchor[..anchor_len];
+        for delta in memchr_iter(needle, haystack) {
+            if anchor_len > 1
+                && !haystack
+                    .get(delta..delta + anchor_len)
+                    .is_some_and(|window| window == anchor_window)
+            {
+                continue;
+            }
+            let anchor_index = start_index.checked_add(delta)?;
+            let mapped_delta = Offset::try_from(anchor_index).ok()?;
+            let anchor_cursor = span.mapped.start.checked_add(mapped_delta)?;
+            let cursor = anchor_cursor.checked_sub(anchor_offset)?;
+            if self.exec(cursor, pat, save, linear_exec) {
+                return Some(cursor);
+            }
+        }
+        None
+    }
+
+    fn scan_range_first_byte_direct(
+        &self,
+        range: Range<Offset>,
+        mut cursor: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        anchor: &[u8; ANCHOR_MAX_LEN],
+        anchor_offset: u64,
+    ) -> Option<Offset> {
+        let needle = anchor[0];
+        let mut probe = cursor.checked_add(anchor_offset)?;
+        while probe < range.end {
+            if self.view.read_u8(probe) == Some(needle) && self.exec(cursor, pat, save, linear_exec)
+            {
+                return Some(cursor);
+            }
+            cursor = cursor.checked_add(1)?;
+            probe = probe.checked_add(1)?;
+        }
+        None
+    }
+
+    fn scan_span_quick_direct(
+        &self,
+        span: &CodeSpan,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        anchor: &[u8; ANCHOR_MAX_LEN],
+        anchor_len: usize,
+        anchor_offset: u64,
+    ) -> Option<Offset> {
+        let Some(bytes) = self.view.image().get(span.file.clone()) else {
+            return self.scan_range_quick_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_len,
+                anchor_offset,
+            );
+        };
+        let anchor_start = start.checked_add(anchor_offset)?;
+        let Some(start_file) = mapped_to_file_offset(span, anchor_start) else {
+            return self.scan_range_quick_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_len,
+                anchor_offset,
+            );
+        };
+        let Some(start_index) = start_file.checked_sub(span.file.start) else {
+            return self.scan_range_quick_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_len,
+                anchor_offset,
+            );
+        };
+        let prefix = &anchor[..anchor_len];
+        let Some(haystack) = bytes.get(start_index..) else {
+            return self.scan_range_quick_direct(
+                span.mapped.clone(),
+                start,
+                pat,
+                save,
+                linear_exec,
+                anchor,
+                anchor_len,
+                anchor_offset,
+            );
+        };
+        if haystack.len() < anchor_len {
+            return None;
+        }
+
+        let mut jumps = [anchor_len as u8; 256];
+        for (index, byte) in prefix.iter().take(anchor_len.saturating_sub(1)).enumerate() {
+            jumps[usize::from(*byte)] = (anchor_len - index - 1) as u8;
+        }
+
+        let last = prefix[anchor_len - 1];
+        let mut index = 0usize;
+        let max_index = haystack.len() - anchor_len;
+        while index <= max_index {
+            let probe = haystack[index + anchor_len - 1];
+            let jump = usize::from(jumps[usize::from(probe)].max(1));
+            if probe == last
+                && haystack
+                    .get(index..index + anchor_len)
+                    .is_some_and(|window| window == prefix)
+            {
+                let total_index = start_index.checked_add(index)?;
+                let mapped_delta = Offset::try_from(total_index).ok()?;
+                let cursor = span.mapped.start.checked_add(mapped_delta)?;
+                let start_cursor = cursor.checked_sub(anchor_offset)?;
+                if self.exec(start_cursor, pat, save, linear_exec) {
+                    return Some(start_cursor);
+                }
+            }
+            index = index.checked_add(jump)?;
+        }
+
+        None
+    }
+
+    fn scan_range_quick_direct(
+        &self,
+        range: Range<Offset>,
+        start: Offset,
+        pat: &[Atom],
+        save: &mut [Offset],
+        linear_exec: bool,
+        anchor: &[u8; ANCHOR_MAX_LEN],
+        anchor_len: usize,
+        anchor_offset: u64,
+    ) -> Option<Offset> {
+        let prefix = &anchor[..anchor_len];
+        let window = u64::try_from(anchor_len).ok()?;
+        let start = start.checked_add(anchor_offset)?;
+        if start >= range.end {
+            return None;
+        }
+        let total = range.end.checked_sub(start)?;
+        if total < window {
+            return None;
+        }
+
+        let mut jumps = [anchor_len as u8; 256];
+        for (index, byte) in prefix.iter().take(anchor_len.saturating_sub(1)).enumerate() {
+            jumps[usize::from(*byte)] = (anchor_len - index - 1) as u8;
+        }
+
+        let last = prefix[anchor_len - 1];
+        let mut index = 0u64;
+        let max_index = total - window;
+        while index <= max_index {
+            let cursor = start.checked_add(index)?;
+            let probe_at = cursor.checked_add(window - 1)?;
+            let Some(probe) = self.view.read_u8(probe_at) else {
+                index = index.checked_add(1)?;
+                continue;
+            };
+
+            let jump = u64::from(jumps[usize::from(probe)].max(1));
+            if probe == last
+                && prefix_matches_mapped(self.view, cursor, prefix)
+                && self.exec(cursor.checked_sub(anchor_offset)?, pat, save, linear_exec)
+            {
+                return cursor.checked_sub(anchor_offset);
+            }
+            index = index.checked_add(jump)?;
+        }
+
+        None
     }
 
     fn exec_linear(&self, start: Offset, pat: &[Atom], save: &mut [Offset]) -> bool {
@@ -1284,6 +1665,18 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
     }
     let delta_usize = usize::try_from(delta).ok()?;
     span.file.start.checked_add(delta_usize)
+}
+
+fn prefix_matches_mapped<B: BinaryView>(view: &B, cursor: Offset, prefix: &[u8]) -> bool {
+    for (index, expected) in prefix.iter().enumerate() {
+        let Some(offset) = cursor.checked_add(index as u64) else {
+            return false;
+        };
+        if view.read_u8(offset) != Some(*expected) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
