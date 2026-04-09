@@ -6,6 +6,18 @@ Quick benchmark matrix run:
 scripts/bench-key.sh
 ```
 
+Run only finds_prepared benchmarks:
+
+```bash
+scripts/bench-key.sh --mode finds-prepared
+```
+
+Print a compact Criterion summary table:
+
+```bash
+scripts/bench-summary.sh --mode finds-prepared
+```
+
 Save a baseline (run on checkout A):
 
 ```bash

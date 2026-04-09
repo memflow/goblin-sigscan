@@ -17,6 +17,7 @@ Phase 2 (compare current checkout vs saved baseline):
 Options:
   --name NAME            Baseline name (required)
   --phase save|compare   Which phase to run (default: save)
+  --mode NAME            Benchmark mode passed to bench-key (default: all)
   --runs N               Repeat full key matrix N times (default: 1)
   --sample-size N        Criterion sample size (default: 10)
   --measurement-time S   Criterion measurement time seconds (default: 3)
@@ -31,6 +32,7 @@ EOF
 
 baseline_name=""
 phase="save"
+mode="all"
 runs=1
 sample_size=10
 measurement_time=3
@@ -44,6 +46,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--phase)
 		phase="$2"
+		shift 2
+		;;
+	--mode)
+		mode="$2"
 		shift 2
 		;;
 	--runs)
@@ -97,6 +103,7 @@ for run in $(seq 1 "$runs"); do
 	echo "==> phase=$phase run=$run baseline=$baseline_name"
 	cmd=(
 		scripts/bench-key.sh
+		--mode "$mode"
 		--sample-size "$sample_size"
 		--measurement-time "$measurement_time"
 		"${baseline_flag[@]}"

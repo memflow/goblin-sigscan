@@ -132,6 +132,7 @@ fn bench_pe64(c: &mut Criterion) {
 
     for pat in &patterns {
         print_shape("scan_pe64", pat.label, &pat.atoms);
+        let prepared = scanner.prepare_pattern(&pat.atoms);
         group.bench_with_input(
             BenchmarkId::new("matches_code", pat.label),
             pat,
@@ -162,6 +163,21 @@ fn bench_pe64(c: &mut Criterion) {
                 BatchSize::SmallInput,
             );
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("finds_prepared", pat.label),
+            pat,
+            |b, _pat| {
+                b.iter_batched_ref(
+                    || vec![0u64; prepared.required_slots()],
+                    |save| {
+                        let found = scanner.finds_prepared(&prepared, save);
+                        black_box(found);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
 
     group.finish();
@@ -184,6 +200,7 @@ fn bench_elf64(c: &mut Criterion) {
 
     for pat in &patterns {
         print_shape("scan_elf64", pat.label, &pat.atoms);
+        let prepared = scanner.prepare_pattern(&pat.atoms);
         group.bench_with_input(
             BenchmarkId::new("matches_code", pat.label),
             pat,
@@ -214,6 +231,21 @@ fn bench_elf64(c: &mut Criterion) {
                 BatchSize::SmallInput,
             );
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("finds_prepared", pat.label),
+            pat,
+            |b, _pat| {
+                b.iter_batched_ref(
+                    || vec![0u64; prepared.required_slots()],
+                    |save| {
+                        let found = scanner.finds_prepared(&prepared, save);
+                        black_box(found);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
 
     group.finish();

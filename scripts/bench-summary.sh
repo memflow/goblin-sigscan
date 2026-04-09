@@ -2,37 +2,25 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly DEFAULT_SAMPLE_SIZE=10
-readonly DEFAULT_MEASUREMENT_TIME=3
-
 usage() {
 	cat <<'EOF'
-Usage: scripts/bench-key.sh [options]
+Usage: scripts/bench-summary.sh [--mode MODE] [--metric median|mean]
 
-Run the scanner benchmark key matrix under nix.
+Print a compact table from Criterion output in target/criterion.
 
 Options:
-  --mode NAME            Benchmark mode: matches, finds, finds-prepared, all (default: all)
-  --sample-size N        Criterion sample size (default: 10)
-  --measurement-time S   Criterion measurement time seconds (default: 3)
-  --save-baseline NAME   Save baseline with this name
-  --baseline NAME        Compare against baseline with this name
-  --extra ARG            Extra argument forwarded to criterion (repeatable)
+  --mode MODE            matches, finds, finds-prepared, all (default: all)
+  --metric NAME          median or mean (default: median)
   -h, --help             Show help
 
 Examples:
-  scripts/bench-key.sh --save-baseline pre-anchor
-  scripts/bench-key.sh --baseline pre-anchor
-  scripts/bench-key.sh --mode finds-prepared
+  scripts/bench-summary.sh
+  scripts/bench-summary.sh --mode finds-prepared
 EOF
 }
 
-sample_size="$DEFAULT_SAMPLE_SIZE"
-measurement_time="$DEFAULT_MEASUREMENT_TIME"
 mode="all"
-baseline_mode=""
-baseline_name=""
-extra_args=()
+metric="median"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -40,26 +28,8 @@ while [[ $# -gt 0 ]]; do
 		mode="$2"
 		shift 2
 		;;
-	--sample-size)
-		sample_size="$2"
-		shift 2
-		;;
-	--measurement-time)
-		measurement_time="$2"
-		shift 2
-		;;
-	--save-baseline)
-		baseline_mode="--save-baseline"
-		baseline_name="$2"
-		shift 2
-		;;
-	--baseline)
-		baseline_mode="--baseline"
-		baseline_name="$2"
-		shift 2
-		;;
-	--extra)
-		extra_args+=("$2")
+	--metric)
+		metric="$2"
 		shift 2
 		;;
 	-h | --help)
@@ -74,19 +44,17 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-if [[ -n "$baseline_mode" && -z "$baseline_name" ]]; then
-	echo "error: baseline mode requires a baseline name" >&2
+case "$metric" in
+median | mean) ;;
+*)
+	echo "error: invalid --metric '$metric' (median|mean)" >&2
 	exit 2
-fi
-
-if [[ "$sample_size" -lt 10 ]]; then
-	echo "error: --sample-size must be >= 10 for criterion" >&2
-	exit 2
-fi
+	;;
+esac
 
 case "$mode" in
 matches)
-	readonly BENCHES=(
+	benches=(
 		"scan_pe64/matches_code/jump4"
 		"scan_pe64/matches_code/alternation"
 		"scan_elf64/matches_code/push_pop"
@@ -96,7 +64,7 @@ matches)
 	)
 	;;
 finds)
-	readonly BENCHES=(
+	benches=(
 		"scan_pe64/finds_code/jump4"
 		"scan_pe64/finds_code/alternation"
 		"scan_elf64/finds_code/push_pop"
@@ -106,7 +74,7 @@ finds)
 	)
 	;;
 finds-prepared)
-	readonly BENCHES=(
+	benches=(
 		"scan_pe64/finds_prepared/jump4"
 		"scan_pe64/finds_prepared/alternation"
 		"scan_elf64/finds_prepared/push_pop"
@@ -116,7 +84,7 @@ finds-prepared)
 	)
 	;;
 all)
-	readonly BENCHES=(
+	benches=(
 		"scan_pe64/matches_code/jump4"
 		"scan_pe64/matches_code/alternation"
 		"scan_elf64/matches_code/push_pop"
@@ -143,18 +111,46 @@ all)
 	;;
 esac
 
-for bench in "${BENCHES[@]}"; do
-	echo "==> $bench"
-	cmd=(
-		nix develop -c cargo bench -p goblin-lite --bench scan_perf -- "$bench"
-		--sample-size "$sample_size"
-		--measurement-time "$measurement_time"
-	)
-	if [[ -n "$baseline_mode" ]]; then
-		cmd+=("$baseline_mode" "$baseline_name")
-	fi
-	if [[ ${#extra_args[@]} -gt 0 ]]; then
-		cmd+=("${extra_args[@]}")
-	fi
-	"${cmd[@]}"
-done
+python3 - "$metric" "${benches[@]}" <<'PY'
+import json
+import pathlib
+import sys
+
+metric = sys.argv[1]
+benches = sys.argv[2:]
+root = pathlib.Path("target/criterion")
+
+
+def fmt_ns(ns: float) -> str:
+    if ns >= 1_000_000_000:
+        return f"{ns / 1_000_000_000:.2f}s"
+    if ns >= 1_000_000:
+        return f"{ns / 1_000_000:.2f}ms"
+    if ns >= 1_000:
+        return f"{ns / 1_000:.2f}us"
+    return f"{ns:.2f}ns"
+
+
+print(f"{'benchmark':50} {'time':>12} {'delta':>10}")
+print("-" * 75)
+
+for bench in benches:
+    bench_dir = root / bench
+    est_path = bench_dir / "new" / "estimates.json"
+    if not est_path.exists():
+        print(f"{bench:50} {'(missing)':>12} {'-':>10}")
+        continue
+
+    data = json.loads(est_path.read_text())
+    time_ns = float(data[metric]["point_estimate"])
+
+    change_path = bench_dir / "change" / "estimates.json"
+    if change_path.exists():
+        change = json.loads(change_path.read_text())
+        delta = float(change[metric]["point_estimate"]) * 100.0
+        delta_str = f"{delta:+.2f}%"
+    else:
+        delta_str = "-"
+
+    print(f"{bench:50} {fmt_ns(time_ns):>12} {delta_str:>10}")
+PY
