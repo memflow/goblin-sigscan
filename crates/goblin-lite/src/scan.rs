@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{Atom, save_len};
+use crate::pattern::{Atom, ParsePatError, save_len};
 use memchr::memchr_iter;
 
 pub type Offset = u64;
@@ -234,6 +234,15 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     /// Prepares reusable scanner metadata for a parsed pattern.
     pub fn prepare_pattern(&self, pat: &[Atom]) -> PreparedPattern {
         PreparedPattern::from_atoms(pat.to_vec())
+    }
+
+    /// Parses and prepares a pattern string for scanning.
+    ///
+    /// This is slower than [`Self::prepare_pattern`] because it performs
+    /// runtime text parsing and allocates atom storage on each call.
+    pub fn prepare_pattern_str(&self, source: &str) -> Result<PreparedPattern, ParsePatError> {
+        let atoms = crate::pattern::parse(source)?;
+        Ok(PreparedPattern::from_atoms(atoms))
     }
 
     /// Returns `true` only when a prepared pattern has exactly one code match.
@@ -1420,6 +1429,25 @@ mod tests {
         assert!(scanner.matches_code(&pat).next(&mut save_runtime));
         assert!(scanner.matches_prepared(&prepared).next(&mut save_prepared));
         assert_eq!(save_runtime, save_prepared);
+    }
+
+    #[test]
+    fn prepare_pattern_str_parses_runtime_text() {
+        let view = TestView::new(&[0x00, 0xaa, 0xbb]);
+        let scanner = Scanner::new(&view);
+        let prepared = scanner
+            .prepare_pattern_str("AA BB")
+            .expect("runtime pattern text should parse");
+
+        let mut save = vec![0u64; prepared.required_slots()];
+        assert!(scanner.matches_prepared(&prepared).next(&mut save));
+    }
+
+    #[test]
+    fn prepare_pattern_str_reports_parse_errors() {
+        let view = TestView::new(&[]);
+        let scanner = Scanner::new(&view);
+        assert!(scanner.prepare_pattern_str("A?").is_err());
     }
 
     #[test]
