@@ -47,6 +47,7 @@ struct PatternPlan {
     anchor: [u8; ANCHOR_MAX_LEN],
     anchor_len: usize,
     anchor_offset: u64,
+    anchor_jumps: [u8; 256],
 }
 
 /// Reusable scanner metadata and atoms for repeated scans.
@@ -58,6 +59,7 @@ pub struct PreparedPattern {
     anchor: [u8; ANCHOR_MAX_LEN],
     anchor_len: usize,
     anchor_offset: u64,
+    anchor_jumps: [u8; 256],
 }
 
 impl PreparedPattern {
@@ -71,6 +73,7 @@ impl PreparedPattern {
             anchor: plan.anchor,
             anchor_len: plan.anchor_len,
             anchor_offset: plan.anchor_offset,
+            anchor_jumps: plan.anchor_jumps,
         }
     }
 
@@ -323,6 +326,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor: pat.anchor,
             anchor_len: pat.anchor_len,
             anchor_offset: pat.anchor_offset,
+            anchor_jumps: pat.anchor_jumps,
             scratch: ExecScratch::default(),
         }
     }
@@ -340,6 +344,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor: plan.anchor,
             anchor_len: plan.anchor_len,
             anchor_offset: plan.anchor_offset,
+            anchor_jumps: plan.anchor_jumps,
             scratch: ExecScratch::default(),
         }
     }
@@ -753,9 +758,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         save: &mut [Offset],
         scratch: &mut ExecScratch,
     ) -> bool {
-        if let Some(result) = self.exec_linear_specialized(start, pat, save) {
-            return result;
-        }
         scratch.reset_from_save(save);
         let work_save = &mut scratch.work_save;
         let mut cursor = start;
@@ -965,91 +967,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     return false;
                 }
             }
-        }
-    }
-
-    fn exec_linear_specialized(
-        &self,
-        start: Offset,
-        pat: &[Atom],
-        save: &mut [Offset],
-    ) -> Option<bool> {
-        match pat {
-            [Atom::Save(0), Atom::Byte(expected), Atom::Jump4] => {
-                let mut reader = ExecReader::new(self.view, start);
-                if reader.read_u8(start) != Some(*expected) {
-                    return Some(false);
-                }
-                let read_at = start.checked_add(1)?;
-                let disp = reader.read_i32(read_at)?;
-                let base = read_at.checked_add(4)?;
-                let target = offset_add_signed(base, i64::from(disp))?;
-                if let Some(slot) = save.get_mut(0) {
-                    *slot = start;
-                }
-                let _ = target;
-                Some(true)
-            }
-            [
-                Atom::Save(0),
-                Atom::Byte(expected),
-                Atom::Jump4,
-                Atom::Save(slot),
-            ] => {
-                let mut reader = ExecReader::new(self.view, start);
-                if reader.read_u8(start) != Some(*expected) {
-                    return Some(false);
-                }
-                let read_at = start.checked_add(1)?;
-                let disp = reader.read_i32(read_at)?;
-                let base = read_at.checked_add(4)?;
-                let target = offset_add_signed(base, i64::from(disp))?;
-                if let Some(start_slot) = save.get_mut(0) {
-                    *start_slot = start;
-                }
-                if let Some(target_slot) = save.get_mut(usize::from(*slot)) {
-                    *target_slot = target;
-                }
-                Some(true)
-            }
-            [Atom::Save(0), Atom::Byte(expected), Atom::Jump1] => {
-                let mut reader = ExecReader::new(self.view, start);
-                if reader.read_u8(start) != Some(*expected) {
-                    return Some(false);
-                }
-                let read_at = start.checked_add(1)?;
-                let disp = reader.read_u8(read_at)? as i8;
-                let base = read_at.checked_add(1)?;
-                let target = offset_add_signed(base, i64::from(disp))?;
-                if let Some(slot) = save.get_mut(0) {
-                    *slot = start;
-                }
-                let _ = target;
-                Some(true)
-            }
-            [
-                Atom::Save(0),
-                Atom::Byte(expected),
-                Atom::Jump1,
-                Atom::Save(slot),
-            ] => {
-                let mut reader = ExecReader::new(self.view, start);
-                if reader.read_u8(start) != Some(*expected) {
-                    return Some(false);
-                }
-                let read_at = start.checked_add(1)?;
-                let disp = reader.read_u8(read_at)? as i8;
-                let base = read_at.checked_add(1)?;
-                let target = offset_add_signed(base, i64::from(disp))?;
-                if let Some(start_slot) = save.get_mut(0) {
-                    *start_slot = start;
-                }
-                if let Some(target_slot) = save.get_mut(usize::from(*slot)) {
-                    *target_slot = target;
-                }
-                Some(true)
-            }
-            _ => None,
         }
     }
 
@@ -1388,15 +1305,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 }
 
-#[inline]
-fn offset_add_signed(base: Offset, delta: i64) -> Option<Offset> {
-    if delta >= 0 {
-        base.checked_add(delta as u64)
-    } else {
-        base.checked_sub((-delta) as u64)
-    }
-}
-
 #[derive(Clone, Debug)]
 /// Stateful matcher produced by [`Scanner::matches_code`].
 pub struct Matches<'a, 'p, B: BinaryView> {
@@ -1409,6 +1317,7 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     anchor: [u8; ANCHOR_MAX_LEN],
     anchor_len: usize,
     anchor_offset: u64,
+    anchor_jumps: [u8; 256],
     scratch: ExecScratch,
 }
 
@@ -1496,6 +1405,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
         };
         let needle = self.anchor[0];
         let anchor = &self.anchor[..self.anchor_len];
+        let anchor_offset = usize::try_from(self.anchor_offset).ok()?;
         for delta in memchr_iter(needle, haystack) {
             if self.anchor_len > 1
                 && !haystack
@@ -1507,13 +1417,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             let Some(anchor_index) = start_index.checked_add(delta) else {
                 return None;
             };
-            let Some(mapped_delta) = Offset::try_from(anchor_index).ok() else {
+            let Some(start_index_in_span) = anchor_index.checked_sub(anchor_offset) else {
+                continue;
+            };
+            let Some(mapped_delta) = Offset::try_from(start_index_in_span).ok() else {
                 return None;
             };
-            let Some(anchor_cursor) = span.mapped.start.checked_add(mapped_delta) else {
-                return None;
-            };
-            let Some(cursor) = anchor_cursor.checked_sub(self.anchor_offset) else {
+            let Some(cursor) = span.mapped.start.checked_add(mapped_delta) else {
                 return None;
             };
             if self
@@ -1567,15 +1477,6 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             return None;
         }
 
-        let mut jumps = [self.anchor_len as u8; 256];
-        for (index, byte) in prefix
-            .iter()
-            .take(self.anchor_len.saturating_sub(1))
-            .enumerate()
-        {
-            jumps[usize::from(*byte)] = (self.anchor_len - index - 1) as u8;
-        }
-
         let last = prefix[self.anchor_len - 1];
         let mut index = 0u64;
         let max_index = total - window;
@@ -1587,7 +1488,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 continue;
             };
 
-            let jump = u64::from(jumps[usize::from(probe)].max(1));
+            let jump = u64::from(self.anchor_jumps[usize::from(probe)].max(1));
             if probe == last
                 && self.prefix_matches_mapped(cursor)
                 && self.scanner.exec(
@@ -1633,22 +1534,13 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             return None;
         }
 
-        let mut jumps = [self.anchor_len as u8; 256];
-        for (index, byte) in prefix
-            .iter()
-            .take(self.anchor_len.saturating_sub(1))
-            .enumerate()
-        {
-            jumps[usize::from(*byte)] = (self.anchor_len - index - 1) as u8;
-        }
-
         let last = prefix[self.anchor_len - 1];
         let mut index = 0usize;
         let max_index = haystack.len() - self.anchor_len;
         while index <= max_index {
             let probe = haystack[index + self.anchor_len - 1];
 
-            let jump = usize::from(jumps[usize::from(probe)].max(1));
+            let jump = usize::from(self.anchor_jumps[usize::from(probe)].max(1));
             if probe == last
                 && haystack
                     .get(index..index + self.anchor_len)
@@ -1720,13 +1612,24 @@ fn analyze_pattern(pat: &[Atom]) -> PatternPlan {
     let linear_exec = is_linear_pattern(pat);
     let (prefix, prefix_len) = build_prefix(pat);
     let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
+    let anchor_jumps = build_anchor_jumps(&anchor, anchor_len);
     PatternPlan {
         required_slots,
         linear_exec,
         anchor,
         anchor_len,
         anchor_offset,
+        anchor_jumps,
     }
+}
+
+fn build_anchor_jumps(anchor: &[u8; ANCHOR_MAX_LEN], anchor_len: usize) -> [u8; 256] {
+    let default_jump = anchor_len.max(1) as u8;
+    let mut jumps = [default_jump; 256];
+    for (index, byte) in anchor.iter().take(anchor_len.saturating_sub(1)).enumerate() {
+        jumps[usize::from(*byte)] = (anchor_len - index - 1) as u8;
+    }
+    jumps
 }
 
 /// Chooses the best fixed-size literal anchor window from the prefix.
@@ -1809,20 +1712,6 @@ fn is_linear_pattern(pat: &[Atom]) -> bool {
     })
 }
 
-#[cfg(test)]
-fn is_tiny_literal_jump_pattern(pat: &[Atom]) -> bool {
-    let mut has_jump1 = false;
-    for atom in pat {
-        match atom {
-            Atom::Byte(_) | Atom::Save(_) | Atom::Skip(_) | Atom::Nop => {}
-            Atom::Jump1 => has_jump1 = true,
-            Atom::Jump4 => return false,
-            _ => return false,
-        }
-    }
-    has_jump1
-}
-
 fn span_index_for_offset(spans: &[CodeSpan], offset: Offset) -> Option<usize> {
     let mut low = 0usize;
     let mut high = spans.len();
@@ -1870,7 +1759,7 @@ fn prefix_matches_mapped<B: BinaryView>(view: &B, cursor: Offset, prefix: &[u8])
 mod tests {
     use super::{
         BinaryView, CodeSpan, Offset, PreparedPattern, Scanner, build_prefix, is_linear_pattern,
-        is_tiny_literal_jump_pattern, select_anchor, span_index_for_offset,
+        select_anchor, span_index_for_offset,
     };
     use crate::pattern::Atom;
 
@@ -2132,38 +2021,6 @@ mod tests {
         assert!(!is_linear_pattern(&[Atom::Save(0), Atom::SkipRange(1, 3)]));
         assert!(!is_linear_pattern(&[Atom::Push(1), Atom::Pop]));
         assert!(!is_linear_pattern(&[Atom::Case(1), Atom::Break(0)]));
-    }
-
-    #[test]
-    fn tiny_literal_jump_selector_is_strict() {
-        assert!(is_tiny_literal_jump_pattern(&[
-            Atom::Save(0),
-            Atom::Byte(0x74),
-            Atom::Jump1,
-            Atom::Nop,
-        ]));
-        assert!(!is_tiny_literal_jump_pattern(&[
-            Atom::Save(0),
-            Atom::Byte(0xe8),
-            Atom::Jump4,
-            Atom::Nop,
-        ]));
-        assert!(!is_tiny_literal_jump_pattern(&[
-            Atom::Byte(0xe8),
-            Atom::Save(0)
-        ]));
-        assert!(!is_tiny_literal_jump_pattern(&[
-            Atom::Save(0),
-            Atom::Byte(0xe8),
-            Atom::SkipRange(1, 2),
-            Atom::Jump4,
-        ]));
-        assert!(!is_tiny_literal_jump_pattern(&[
-            Atom::Save(0),
-            Atom::Byte(0xe8),
-            Atom::ReadU32(1),
-            Atom::Jump4,
-        ]));
     }
 
     #[test]
