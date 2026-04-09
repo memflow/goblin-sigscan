@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::pattern::{Atom, save_len};
+use crate::pattern::{save_len, Atom};
 use memchr::memchr_iter;
 
 pub type Offset = u64;
@@ -167,8 +167,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
     /// Returns `true` only when the pattern has exactly one code match.
     pub fn finds_code(&self, pat: &[Atom], save: &mut [Offset]) -> bool {
+        let required_slots = save_len(pat);
         debug_assert!(
-            save.len() >= save_len(pat),
+            save.len() >= required_slots,
             "caller-provided save buffer must cover all slots referenced by the pattern"
         );
         let mut matches = self.matches_code(pat);
@@ -176,7 +177,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             return false;
         }
 
-        let mut scratch = save.to_vec();
+        let mut scratch = vec![0; required_slots];
         !matches.next(&mut scratch)
     }
 
@@ -1183,8 +1184,8 @@ fn mapped_to_file_offset(span: &CodeSpan, mapped: Offset) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryView, CodeSpan, Offset, Scanner, build_prefix, is_linear_pattern,
-        is_tiny_literal_jump_pattern, select_anchor, span_index_for_offset,
+        build_prefix, is_linear_pattern, is_tiny_literal_jump_pattern, select_anchor,
+        span_index_for_offset, BinaryView, CodeSpan, Offset, Scanner,
     };
     use crate::pattern::Atom;
 
