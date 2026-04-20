@@ -18,5 +18,5 @@ path = "src/main.rs"
 
 [dependencies]
 goblin = { workspace = true }
-goblin-sigscan = { path = "../goblin-sigscan" }
+goblin-sigscan = { version = "0.1.0", path = "../goblin-sigscan" }
 thiserror = { workspace = true }

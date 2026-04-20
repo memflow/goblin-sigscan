@@ -21,8 +21,8 @@ assert!(save_slots >= 1);
 # Ok::<(), goblin_sigscan::pattern::ParsePatError>(())
 ```
 
-Before scanning, make the `save` buffer this size:
-`pattern::save_len(&atoms)` (or `PreparedPattern::required_slots()`).
+Before scanning, ensure the `save` buffer has enough capacity for at least
+`pattern::save_len(&atoms)` elements (or `PreparedPattern::required_slots()`).
 Slot `0` always holds the match base address.
 
 For syntax onboarding, see the public docs on `goblin_sigscan::pattern` and

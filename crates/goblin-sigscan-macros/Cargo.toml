@@ -16,5 +16,5 @@ categories = ["development-tools::procedural-macro-helpers", "parsing"]
 proc-macro = true
 
 [dependencies]
-goblin-sigscan-pattern = { path = "../goblin-sigscan-pattern" }
+goblin-sigscan-pattern = { version = "0.1.0", path = "../goblin-sigscan-pattern" }
 proc-macro-crate = { workspace = true }
