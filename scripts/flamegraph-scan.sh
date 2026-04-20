@@ -60,7 +60,7 @@ if [[ "$(uname -s)" == "Darwin" ]] && ! command -v xctrace >/dev/null 2>&1; then
 	exit 1
 fi
 
-cmd=(nix develop -c cargo flamegraph -p sigscan)
+cmd=(nix develop -c cargo flamegraph -p goblin-sigscan-cli)
 if [[ "$use_root" == "true" ]]; then
 	cmd+=(--root)
 fi

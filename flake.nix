@@ -1,5 +1,5 @@
 {
-  description = "Development shell for goblin-lite";
+  description = "Development shell for goblin-sigscan";
 
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";

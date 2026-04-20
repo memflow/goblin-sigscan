@@ -146,7 +146,7 @@ esac
 for bench in "${BENCHES[@]}"; do
 	echo "==> $bench"
 	cmd=(
-		nix develop -c cargo bench -p goblin-lite --bench scan_perf -- "$bench"
+		nix develop -c cargo bench -p goblin-sigscan --bench scan_perf -- "$bench"
 		--sample-size "$sample_size"
 		--measurement-time "$measurement_time"
 	)

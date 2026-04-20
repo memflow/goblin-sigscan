@@ -6,7 +6,7 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/bench-pelite-summary.sh [--group GROUP] [--metric median|mean]
 
-Print a compact goblin-lite vs pelite ratio table from Criterion output.
+Print a compact goblin-sigscan vs pelite ratio table from Criterion output.
 
 Options:
   --group NAME           first-match, all-matches, all (default: all)
@@ -96,12 +96,12 @@ def point_estimate(path: pathlib.Path) -> float | None:
     return float(data[metric]["point_estimate"])
 
 
-print(f"{'group':12} {'pattern':12} {'goblin-lite':>12} {'pelite':>12} {'ratio':>8} {'delta':>9}")
+print(f"{'group':12} {'pattern':12} {'goblin-sigscan':>12} {'pelite':>12} {'ratio':>8} {'delta':>9}")
 print("-" * 74)
 
 for group_name, dir_name in groups:
     for case in cases:
-        goblin_path = root / dir_name / "goblin-lite" / case / "new" / "estimates.json"
+        goblin_path = root / dir_name / "goblin-sigscan" / case / "new" / "estimates.json"
         pelite_path = root / dir_name / "pelite" / case / "new" / "estimates.json"
         goblin = point_estimate(goblin_path)
         pelite = point_estimate(pelite_path)

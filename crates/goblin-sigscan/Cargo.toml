@@ -1,0 +1,34 @@
+[package]
+name = "goblin-sigscan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/goblin-sigscan/"
+keywords = ["binary", "elf", "mach", "pe", "signature"]
+categories = ["parsing", "development-tools::debugging"]
+
+[dependencies]
+goblin = { workspace = true }
+thiserror = { workspace = true }
+bytemuck = { workspace = true }
+memchr = { workspace = true }
+goblin-sigscan-macros = { path = "../goblin-sigscan-macros" }
+goblin-sigscan-pattern = { path = "../goblin-sigscan-pattern" }
+
+[dev-dependencies]
+criterion = "0.5"
+pelite = "0.10"
+proptest = "1"
+
+[[bench]]
+name = "scan_perf"
+harness = false
+
+[[bench]]
+name = "pelite_compare"
+harness = false

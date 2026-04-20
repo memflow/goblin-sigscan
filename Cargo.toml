@@ -9,7 +9,7 @@ rust-version = "1.88"
 authors = ["ko1N <ko1N@users.noreply.github.com>", "killerra <killerra@users.noreply.github.com>"]
 license = "MIT"
 description = "Goblin-powered PE pattern scanning with pelite-style signatures"
-repository = "https://github.com/ko1N/goblin-lite"
+repository = "https://github.com/memflow/goblin-sigscan"
 readme = "README.md"
 
 [workspace.dependencies]

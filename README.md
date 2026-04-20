@@ -1,38 +1,38 @@
-# goblin-lite
+# goblin-sigscan
 
-`goblin-lite` provides pelite-style pattern parsing and scanner behavior over
+`goblin-sigscan` provides pelite-style pattern parsing and scanner behavior over
 goblin-backed PE/ELF/Mach binaries.
 
 ## Workspace crates
 
-- `crates/goblin-lite-pattern`: pattern parser and atom model
-- `crates/goblin-lite`: scanner/runtime API and format wrappers
-- `crates/goblin-lite-macros`: `pattern!` compile-time parsing macro
-- `crates/sigscan`: small CLI for pelite-style signature scanning
+- `crates/goblin-sigscan-pattern`: pattern parser and atom model
+- `crates/goblin-sigscan`: scanner/runtime API and format wrappers
+- `crates/goblin-sigscan-macros`: `pattern!` compile-time parsing macro
+- `crates/goblin-sigscan-cli`: small CLI for pelite-style signature scanning
 
 ## Quick start
 
 ```rust
-use goblin_lite::pattern;
+use goblin_sigscan::pattern;
 
 let atoms = pattern::parse("48 8B ? ? ? ? 48 89")?;
 let save_slots = pattern::save_len(&atoms);
 assert!(save_slots >= 1);
-# Ok::<(), goblin_lite::pattern::ParsePatError>(())
+# Ok::<(), goblin_sigscan::pattern::ParsePatError>(())
 ```
 
 Before scanning, make the `save` buffer this size:
 `pattern::save_len(&atoms)` (or `PreparedPattern::required_slots()`).
 Slot `0` always holds the match base address.
 
-For syntax onboarding, see the public docs on `goblin_lite::pattern` and
-`goblin_lite_pattern::parse`.
+For syntax onboarding, see the public docs on `goblin_sigscan::pattern` and
+`goblin_sigscan_pattern::parse`.
 
 Docs.rs navigation shortcuts:
 
-- crate tutorial: <https://docs.rs/goblin-lite/latest/goblin_lite/>
-- pattern module: <https://docs.rs/goblin-lite/latest/goblin_lite/pattern/>
-- parser crate: <https://docs.rs/goblin-lite-pattern/latest/goblin_lite_pattern/>
+- crate tutorial: <https://docs.rs/goblin-sigscan/latest/goblin_sigscan/>
+- pattern module: <https://docs.rs/goblin-sigscan/latest/goblin_sigscan/pattern/>
+- parser crate: <https://docs.rs/goblin-sigscan-pattern/latest/goblin_sigscan_pattern/>
 
 ## Benchmarks
 

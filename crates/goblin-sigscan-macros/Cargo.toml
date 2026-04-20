@@ -1,0 +1,20 @@
+[package]
+name = "goblin-sigscan-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Proc-macros for goblin-sigscan"
+repository.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/goblin-sigscan-macros/"
+keywords = ["macro", "pattern", "signature", "binary", "pe"]
+categories = ["development-tools::procedural-macro-helpers", "parsing"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+goblin-sigscan-pattern = { path = "../goblin-sigscan-pattern" }
+proc-macro-crate = { workspace = true }
