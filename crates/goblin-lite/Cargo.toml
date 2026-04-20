@@ -3,8 +3,14 @@ name = "goblin-lite"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 description.workspace = true
+repository.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/goblin-lite/"
+keywords = ["binary", "elf", "mach", "pe", "signature"]
+categories = ["parsing", "development-tools::debugging"]
 
 [dependencies]
 goblin = { workspace = true }

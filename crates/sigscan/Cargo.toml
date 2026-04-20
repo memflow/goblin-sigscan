@@ -3,8 +3,14 @@ name = "sigscan"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 description = "Small CLI to scan binaries with pelite-style signatures"
+repository.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/sigscan/"
+keywords = ["binary", "cli", "scanner", "signature", "pe"]
+categories = ["command-line-utilities", "development-tools::debugging"]
 
 [dependencies]
 goblin = { workspace = true }

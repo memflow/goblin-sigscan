@@ -3,8 +3,14 @@ name = "goblin-lite-pattern"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 description = "Shared pattern parser for goblin-lite"
+repository.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/goblin-lite-pattern/"
+keywords = ["binary", "pattern", "signature", "scanner", "pe"]
+categories = ["parser-implementations", "parsing"]
 
 [dev-dependencies]
 proptest = "1"

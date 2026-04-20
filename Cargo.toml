@@ -6,8 +6,11 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+authors = ["ko1N <ko1N@users.noreply.github.com>", "killerra <killerra@users.noreply.github.com>"]
 license = "MIT"
 description = "Goblin-powered PE pattern scanning with pelite-style signatures"
+repository = "https://github.com/ko1N/goblin-lite"
+readme = "README.md"
 
 [workspace.dependencies]
 goblin = "0.10"

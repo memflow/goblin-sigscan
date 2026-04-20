@@ -8,6 +8,7 @@ goblin-backed PE/ELF/Mach binaries.
 - `crates/goblin-lite-pattern`: pattern parser and atom model
 - `crates/goblin-lite`: scanner/runtime API and format wrappers
 - `crates/goblin-lite-macros`: `pattern!` compile-time parsing macro
+- `crates/sigscan`: small CLI for pelite-style signature scanning
 
 ## Quick start
 
@@ -20,9 +21,9 @@ assert!(save_slots >= 1);
 # Ok::<(), goblin_lite::pattern::ParsePatError>(())
 ```
 
-When scanning, size `save` buffers with `pattern::save_len(&atoms)` (or
-`PreparedPattern::required_slots()`) and treat slot `0` as match base for
-parsed patterns.
+Before scanning, make the `save` buffer this size:
+`pattern::save_len(&atoms)` (or `PreparedPattern::required_slots()`).
+Slot `0` always holds the match base address.
 
 For syntax onboarding, see the public docs on `goblin_lite::pattern` and
 `goblin_lite_pattern::parse`.
@@ -41,7 +42,7 @@ for reducing run-to-run noise.
 ## Credits
 
 This project borrows heavily from the original pelite pattern model and syntax.
-Huge thanks to casualx and the pelite project:
+Huge thanks to CasualX and his pelite project:
 
 - <https://github.com/CasualX/pelite>
 - <https://docs.rs/pelite/latest/pelite/pattern/>
