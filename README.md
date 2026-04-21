@@ -1,5 +1,10 @@
 # goblin-sigscan
 
+[![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Crates.io](https://img.shields.io/crates/v/goblin-sigscan.svg)](https://crates.io/crates/goblin-sigscan)
+[![docs.rs](https://docs.rs/goblin-sigscan/badge.svg)](https://docs.rs/goblin-sigscan)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/memflow/goblin-sigscan/ci.yml?branch=main)](https://github.com/memflow/goblin-sigscan/actions)
+
 `goblin-sigscan` provides pelite-style pattern parsing and scanner behavior over
 goblin-backed PE/ELF/Mach binaries.
 
