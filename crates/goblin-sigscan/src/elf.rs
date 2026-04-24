@@ -1,3 +1,10 @@
+//! ELF binary wrapper and scanner entry points.
+//!
+//! This module provides [`ElfFile`], a minimal ELF view that exposes executable
+//! segment scanning via [`ElfFile::scanner`] and mapped-address helpers through
+//! [`crate::MappedAddressView`]. Mapped offsets in this module are ELF virtual
+//! addresses.
+
 use std::{cell::Cell, ffi::CStr};
 
 use goblin::elf::{

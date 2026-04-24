@@ -1,3 +1,9 @@
+//! PE/COFF 64-bit binary wrapper and scanner entry points.
+//!
+//! This module provides [`PeFile`], a minimal PE64 view that exposes code-span
+//! scanning via [`PeFile::scanner`] and mapped-address helpers through
+//! [`crate::MappedAddressView`]. Mapped offsets in this module are PE RVAs.
+
 use std::{cell::Cell, ffi::CStr};
 
 use goblin::pe::{

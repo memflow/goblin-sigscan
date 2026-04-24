@@ -113,7 +113,6 @@
 //! - Assuming slot `0` is optional (it is always present for parsed patterns).
 //! - Forgetting that `[a-b]` uses an exclusive upper parse convention (`b - 1`
 //!   is the maximum encoded skip).
-//! - Comparing benchmark runs with mismatched sample settings.
 //!
 //! For benchmark methodology guidance, see `scripts/README.md` in the repo.
 

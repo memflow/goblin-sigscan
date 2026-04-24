@@ -51,16 +51,27 @@ impl std::error::Error for ParsePatError {}
 /// Pattern parsing error categories.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PatError {
+    /// A single hexadecimal nibble was provided without its matching pair.
     UnpairedHexDigit,
+    /// The parser encountered a character that is not valid in pattern syntax.
     UnknownChar,
+    /// A quoted byte string was started but not terminated.
     UnclosedQuote,
+    /// A save slot index exceeded the supported save store bounds.
     SaveOverflow,
+    /// A read instruction had a missing or invalid operand.
     ReadOperand,
+    /// A skip instruction had a missing, malformed, or out-of-range operand.
     SkipOperand,
+    /// A group expression had invalid syntax or unsupported structure.
     GroupOperand,
+    /// Pattern control-flow stack operations were not balanced.
     StackError,
+    /// Pattern control-flow stack state was used in an invalid sequence.
     StackInvalid,
+    /// The source pattern exceeded the maximum supported input length.
     PatternTooLong,
+    /// The parsed pattern expanded beyond supported complexity limits.
     PatternTooComplex,
 }
 

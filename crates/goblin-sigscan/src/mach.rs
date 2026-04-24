@@ -1,3 +1,10 @@
+//! Mach-O binary wrapper and scanner entry points.
+//!
+//! This module provides [`MachFile`], a minimal Mach-O view that exposes code
+//! segment scanning via [`MachFile::scanner`] and mapped-address helpers through
+//! [`crate::MappedAddressView`]. Mapped offsets in this module are Mach VM
+//! addresses.
+
 use std::{cell::Cell, ffi::CStr};
 
 use goblin::mach::{Mach, SingleArch, constants::VM_PROT_EXECUTE};
