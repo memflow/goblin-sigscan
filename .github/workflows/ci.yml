@@ -19,7 +19,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
-          components: clippy
+          components: clippy, rustfmt
+
+      - name: Check formatting (workspace)
+        run: cargo fmt --all -- --check
 
       - name: Compile all workspace targets
         run: cargo check --workspace --all-targets --all-features
