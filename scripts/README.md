@@ -67,17 +67,23 @@ scripts/bench-summary.sh --mode all
 scripts/bench-pelite-summary.sh --group all
 ```
 
-Run a scanner flamegraph with sigscan:
+Run a scanner flamegraph with sigscan (pass `--quiet` so per-match printing
+doesn't dominate the profile):
 
 ```bash
-scripts/flamegraph-scan.sh -- fixtures/memflow_coredump.x86_64.dll "48 8B 0D ${'}"
+scripts/flamegraph-scan.sh -- --quiet fixtures/memflow_coredump.x86_64.dll "48 8B 0D ${'}"
 ```
 
 Write flamegraph to a specific file:
 
 ```bash
-scripts/flamegraph-scan.sh --output perf.svg -- fixtures/libmemflow_coredump.x86_64.so "55 41 57"
+scripts/flamegraph-scan.sh --output perf.svg -- --quiet fixtures/libmemflow_coredump.x86_64.so "55 41 57"
 ```
+
+On Linux, profiling needs perf access — run with `--root` or set
+`sudo sysctl kernel.perf_event_paranoid=1`. Release builds carry line-table
+debuginfo (see `[profile.release]` in the workspace `Cargo.toml`) so frames
+resolve to symbols.
 
 Run the goblin-sigscan vs pelite PE benchmark:
 
