@@ -6,6 +6,7 @@ use goblin_sigscan::{MappedAddressView, elf::ElfFile, mach::MachFile, pe64::PeFi
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const PE32_FIXTURE: &str = "memflow_coredump.x86.dll";
 const ELF64_FIXTURE: &str = "libmemflow_coredump.x86_64.so";
+const ELF32_FIXTURE: &str = "libmemflow_coredump.x86.so";
 const MACH_FIXTURE: &str = "libmemflow_native.aarch64.dylib";
 
 const PE_MMAP_FILE_OFFSET: usize = 2_801_315;
@@ -102,6 +103,26 @@ fn pe64_addressing_helpers_roundtrip_and_read() {
     assert!(file.deref_c_str_rva(u64::MAX).is_none());
     assert!(file.deref_copy_va::<u32>(u64::MAX).is_none());
     assert!(file.deref_c_str_va(u64::MAX).is_none());
+}
+
+#[test]
+fn pointer_width_follows_image_class() {
+    use goblin_sigscan::BinaryView;
+
+    // 32-bit ELF must report a 4-byte pointer width; 64-bit images report 8. This is
+    // what `*`/`Skip(0)`/`Push(0)` rely on, and 32-bit ELF/Mach are accepted by the
+    // wrappers (unlike PE, which is 64-only).
+    let elf32_bytes = fixture_bytes(ELF32_FIXTURE);
+    let elf32 = ElfFile::from_bytes(&elf32_bytes).expect("32-bit ELF fixture should parse");
+    assert_eq!(elf32.pointer_size_bytes(), 4);
+
+    let elf64_bytes = fixture_bytes(ELF64_FIXTURE);
+    let elf64 = ElfFile::from_bytes(&elf64_bytes).expect("64-bit ELF fixture should parse");
+    assert_eq!(elf64.pointer_size_bytes(), 8);
+
+    let mach_bytes = fixture_bytes(MACH_FIXTURE);
+    let mach64 = MachFile::from_bytes(&mach_bytes).expect("aarch64 Mach-O fixture should parse");
+    assert_eq!(mach64.pointer_size_bytes(), 8);
 }
 
 #[test]

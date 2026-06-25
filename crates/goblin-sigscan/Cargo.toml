@@ -32,3 +32,7 @@ harness = false
 [[bench]]
 name = "pelite_compare"
 harness = false
+
+[[bench]]
+name = "parse_perf"
+harness = false

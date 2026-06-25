@@ -5,7 +5,7 @@
 //! [`crate::MappedAddressView`]. Mapped offsets in this module are ELF virtual
 //! addresses.
 
-use std::{cell::Cell, ffi::CStr};
+use std::ffi::CStr;
 
 use goblin::elf::{
     Elf,
@@ -16,6 +16,7 @@ use thiserror::Error;
 use crate::{
     Pod, Ptr, TypedView,
     address::MappedAddressView,
+    loadmap::{LoadMap, LoadRange},
     scan::{BinaryView, CodeSpan, Offset, Scanner},
 };
 
@@ -37,15 +38,7 @@ pub struct ElfFile<'a> {
     bytes: &'a [u8],
     elf: Elf<'a>,
     code_spans: Vec<CodeSpan>,
-    load_ranges: Vec<LoadRange>,
-    load_lookup_cache: Cell<Option<usize>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LoadRange {
-    virt_start: Offset,
-    virt_end: Offset,
-    file_start: Offset,
+    load_map: LoadMap,
 }
 
 impl<'a> ElfFile<'a> {
@@ -71,7 +64,7 @@ impl<'a> ElfFile<'a> {
         let elf = Elf::parse(bytes)?;
 
         let mut code_spans = Vec::new();
-        let mut load_ranges = Vec::new();
+        let mut load_map = LoadMap::new();
 
         for ph in &elf.program_headers {
             if ph.p_type != PT_LOAD {
@@ -86,7 +79,7 @@ impl<'a> ElfFile<'a> {
                         vaddr: virt_start,
                         filesz: ph.p_filesz,
                     })?;
-            load_ranges.push(LoadRange {
+            load_map.push(LoadRange {
                 virt_start,
                 virt_end,
                 file_start: ph.p_offset,
@@ -110,8 +103,7 @@ impl<'a> ElfFile<'a> {
             bytes,
             elf,
             code_spans,
-            load_ranges,
-            load_lookup_cache: Cell::new(None),
+            load_map,
         })
     }
 
@@ -202,16 +194,7 @@ impl<'a> ElfFile<'a> {
     /// }
     /// ```
     pub fn file_offset_to_vaddr(&self, file_offset: usize) -> Option<Offset> {
-        self.load_ranges.iter().find_map(|range| {
-            let file_start = usize::try_from(range.file_start).ok()?;
-            let file_size = usize::try_from(range.virt_end.checked_sub(range.virt_start)?).ok()?;
-            let file_end = file_start.checked_add(file_size)?;
-            if !(file_start..file_end).contains(&file_offset) {
-                return None;
-            }
-            let delta = file_offset.checked_sub(file_start)?;
-            range.virt_start.checked_add(Offset::try_from(delta).ok()?)
-        })
+        self.load_map.file_offset_to_mapped(file_offset)
     }
 
     /// Reads a borrowed POD reference from a virtual address.
@@ -275,32 +258,7 @@ impl<'a> ElfFile<'a> {
     }
 
     fn offset_to_file_offset(&self, offset: Offset) -> Option<usize> {
-        if let Some(index) = self.load_lookup_cache.get()
-            && let Some(mapped) = self.lookup_mapped_file_offset(index, offset)
-        {
-            return usize::try_from(mapped).ok();
-        }
-
-        let mut mapped = None;
-        for (index, _) in self.load_ranges.iter().enumerate() {
-            if let Some(value) = self.lookup_mapped_file_offset(index, offset) {
-                self.load_lookup_cache.set(Some(index));
-                mapped = Some(value);
-                break;
-            }
-        }
-
-        let mapped = mapped?;
-        usize::try_from(mapped).ok()
-    }
-
-    fn lookup_mapped_file_offset(&self, index: usize, offset: Offset) -> Option<Offset> {
-        let range = self.load_ranges.get(index)?;
-        let delta = offset.checked_sub(range.virt_start)?;
-        if offset >= range.virt_end {
-            return None;
-        }
-        range.file_start.checked_add(delta)
+        self.load_map.offset_to_file_offset(offset)
     }
 }
 
@@ -332,5 +290,11 @@ impl BinaryView for ElfFile<'_> {
 
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
         self.offset_to_file_offset(offset)
+    }
+
+    fn pointer_size_bytes(&self) -> u8 {
+        // 32-bit ELFs are accepted here, so report the true pointer width instead of
+        // the 8-byte default; `*` (`Ptr`), `Skip(0)`, and `Push(0)` depend on it.
+        if self.elf.is_64 { 8 } else { 4 }
     }
 }

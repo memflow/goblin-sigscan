@@ -94,10 +94,24 @@ pub trait MappedAddressView {
     }
 
     /// Reads a NUL-terminated C string at a mapped offset.
+    ///
+    /// The string must stay contiguous in mapped space: if it would run past the end of
+    /// its mapped region (into file bytes that are not mapped-adjacent), this returns
+    /// `None` rather than a string spanning unrelated bytes.
     fn mapped_c_str(&self, mapped_offset: Offset) -> Option<&CStr> {
-        let file_offset = self.mapped_to_file_offset(mapped_offset)?;
-        let tail = self.image().get(file_offset..)?;
-        let nul_pos = tail.iter().position(|byte| *byte == 0)?;
+        let file_start = self.mapped_to_file_offset(mapped_offset)?;
+        let tail = self.image().get(file_start..)?;
+        let nul_pos = memchr::memchr(0, tail)?;
+
+        // Verify the terminator maps contiguously from the start with a single extra
+        // lookup (not one per byte): within a mapped region the translation is linear,
+        // so if the last byte lands at file_start + nul_pos the whole string is in
+        // region. Mirrors `TypedView::mapped_slice_strict`.
+        let mapped_end = mapped_offset.checked_add(Offset::try_from(nul_pos).ok()?)?;
+        if self.mapped_to_file_offset(mapped_end)? != file_start.checked_add(nul_pos)? {
+            return None;
+        }
+
         CStr::from_bytes_with_nul(tail.get(..=nul_pos)?).ok()
     }
 }

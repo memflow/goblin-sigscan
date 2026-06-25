@@ -11,6 +11,15 @@ use proc_macro_crate::{FoundCrate, crate_name};
 /// ```
 #[proc_macro]
 pub fn pattern(input: TokenStream) -> TokenStream {
+    // Report misuse as a `compile_error!` at the call site rather than panicking the
+    // compiler, which produces a far clearer diagnostic for the user.
+    match expand(input) {
+        Ok(tokens) => tokens,
+        Err(message) => compile_error(&message),
+    }
+}
+
+fn expand(input: TokenStream) -> Result<TokenStream, String> {
     let mut input = input.into_iter().collect::<Vec<_>>();
 
     if let [TokenTree::Group(group)] = &input[..]
@@ -21,12 +30,12 @@ pub fn pattern(input: TokenStream) -> TokenStream {
 
     let literal = match &input[..] {
         [TokenTree::Literal(lit)] => lit,
-        _ => panic!("expected a single string literal to parse"),
+        _ => return Err("pattern! expects a single string literal".to_owned()),
     };
 
-    let source = parse_str_literal(literal);
+    let source = parse_str_literal(literal)?;
     let atoms = goblin_sigscan_pattern::parse(&source)
-        .unwrap_or_else(|err| panic!("invalid pattern syntax: {err}"));
+        .map_err(|err| format!("invalid pattern syntax: {err}"))?;
     let crate_root = goblin_sigscan_crate_root();
 
     let body = atoms
@@ -38,7 +47,15 @@ pub fn pattern(input: TokenStream) -> TokenStream {
 
     format!("&[{body}]")
         .parse()
-        .expect("token generation failed")
+        .map_err(|_| "failed to generate pattern tokens".to_owned())
+}
+
+/// Builds a `::core::compile_error!("…")` invocation carrying `message`.
+fn compile_error(message: &str) -> TokenStream {
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("::core::compile_error!(\"{escaped}\")")
+        .parse()
+        .expect("compile_error invocation should always tokenize")
 }
 
 fn goblin_sigscan_crate_root() -> String {
@@ -78,16 +95,14 @@ fn atom_to_tokens(atom: Atom) -> String {
     }
 }
 
-fn parse_str_literal(input: &Literal) -> String {
+fn parse_str_literal(input: &Literal) -> Result<String, String> {
     let source = input.to_string();
     let mut chars = source.chars();
     let mut result = String::new();
 
-    assert_eq!(
-        chars.next(),
-        Some('"'),
-        "expected string literal starting with a quote"
-    );
+    if chars.next() != Some('"') {
+        return Err("pattern! expects a string literal".to_owned());
+    }
 
     loop {
         let ch = match chars.next() {
@@ -98,15 +113,15 @@ fn parse_str_literal(input: &Literal) -> String {
                 Some('n') => '\n',
                 Some('r') => '\r',
                 Some('t') => '\t',
-                Some(other) => panic!("unknown escape sequence: {other}"),
-                None => panic!("unexpected end of string literal"),
+                Some(other) => return Err(format!("unknown escape sequence: \\{other}")),
+                None => return Err("unexpected end of string literal".to_owned()),
             },
             Some('"') => break,
             Some(ch) => ch,
-            None => panic!("unexpected end of string literal"),
+            None => return Err("unexpected end of string literal".to_owned()),
         };
         result.push(ch);
     }
 
-    result
+    Ok(result)
 }

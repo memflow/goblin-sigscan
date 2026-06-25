@@ -12,6 +12,11 @@ description = "Goblin-powered PE pattern scanning with pelite-style signatures"
 repository = "https://github.com/memflow/goblin-sigscan"
 readme = "README.md"
 
+# Keep release builds symbol-rich so `cargo flamegraph` produces readable,
+# inline-aware frames without the size cost of full debuginfo.
+[profile.release]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 goblin = "0.10"
 thiserror = "2"

@@ -5,12 +5,14 @@ use criterion::{
 };
 use goblin_sigscan::{
     elf::ElfFile,
+    mach::MachFile,
     pattern::{self, Atom},
     pe64::PeFile,
 };
 
 const PE64_FIXTURE: &str = "memflow_coredump.x86_64.dll";
 const ELF64_FIXTURE: &str = "libmemflow_coredump.x86_64.so";
+const MACH64_FIXTURE: &str = "libmemflow_native.aarch64.dylib";
 
 struct ParsedPattern {
     label: &'static str,
@@ -92,6 +94,10 @@ fn classify_shape(atoms: &[Atom]) -> PatternShape {
 }
 
 fn print_shape(group: &str, label: &str, atoms: &[Atom]) {
+    // Shape diagnostics clutter criterion output, so only emit them when asked.
+    if std::env::var_os("SIGSCAN_BENCH_SHAPES").is_none() {
+        return;
+    }
     let s = classify_shape(atoms);
     println!(
         "shape {group}/{label}: linear={}, tiny_lj={}, bytes={}, jumps={}, skips={}, reads={}, control={}, saves={}, checks={}",
@@ -253,5 +259,71 @@ fn bench_elf64(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_pe64, bench_elf64);
+fn bench_mach64(c: &mut Criterion) {
+    let bytes = fixture_bytes(MACH64_FIXTURE);
+    let file = MachFile::from_bytes(&bytes).expect("Mach-O fixture should parse");
+    let scanner = file.scanner();
+    let patterns = [
+        ParsedPattern::parse("aarch64_ret", "c0 03 5f d6"),
+        ParsedPattern::parse("aarch64_stp_prologue", "fd 7b ? a9"),
+        ParsedPattern::parse("jump4_tiny", "e8 $"),
+    ];
+
+    let mut group = c.benchmark_group("scan_mach64");
+    group.throughput(Throughput::Bytes(bytes.len() as u64));
+
+    for pat in &patterns {
+        print_shape("scan_mach64", pat.label, &pat.atoms);
+        let prepared = scanner.prepare_pattern(&pat.atoms);
+        group.bench_with_input(
+            BenchmarkId::new("matches_code", pat.label),
+            pat,
+            |b, pat| {
+                b.iter_batched_ref(
+                    || vec![0u64; pat.save_slots],
+                    |save| {
+                        let mut total = 0usize;
+                        let mut matches = scanner.matches_code(&pat.atoms);
+                        while matches.next(save) {
+                            total += 1;
+                            black_box(save[0]);
+                        }
+                        black_box(total);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(BenchmarkId::new("finds_code", pat.label), pat, |b, pat| {
+            b.iter_batched_ref(
+                || vec![0u64; pat.save_slots],
+                |save| {
+                    let found = scanner.finds_code(&pat.atoms, save);
+                    black_box(found);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_with_input(
+            BenchmarkId::new("finds_prepared", pat.label),
+            pat,
+            |b, _pat| {
+                b.iter_batched_ref(
+                    || vec![0u64; prepared.required_slots()],
+                    |save| {
+                        let found = scanner.finds_prepared(&prepared, save);
+                        black_box(found);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_pe64, bench_elf64, bench_mach64);
 criterion_main!(benches);

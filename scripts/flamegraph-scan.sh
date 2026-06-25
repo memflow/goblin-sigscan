@@ -13,9 +13,13 @@ Options:
   --output FILE        Output SVG path
   -h, --help           Show help
 
+Pass --quiet as a sigscan argument so per-match printing doesn't dominate the
+profile. On Linux, profiling needs perf access: either run with --root, or set
+  sudo sysctl kernel.perf_event_paranoid=1
+
 Examples:
-  scripts/flamegraph-scan.sh -- fixtures/memflow_coredump.x86_64.dll "48 8B 0D ${'}"
-  scripts/flamegraph-scan.sh --output perf.svg -- fixtures/libmemflow_coredump.x86_64.so "55 41 57"
+  scripts/flamegraph-scan.sh -- --quiet fixtures/memflow_coredump.x86_64.dll "48 8B 0D ${'}"
+  scripts/flamegraph-scan.sh --output perf.svg -- --quiet fixtures/libmemflow_coredump.x86_64.so "55 41 57"
 EOF
 }
 

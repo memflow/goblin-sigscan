@@ -4,9 +4,18 @@ use goblin::Object;
 use goblin_sigscan::{elf, mach, pattern, pe64};
 use thiserror::Error;
 
+/// Parsed command-line arguments.
+struct Args {
+    path: String,
+    signature: String,
+    /// Suppress per-match output. Useful when profiling the scan loop (e.g. under
+    /// `cargo flamegraph`) so stdout formatting doesn't dominate the profile.
+    quiet: bool,
+}
+
 #[derive(Debug, Error)]
 enum CliError {
-    #[error("usage: {program} <binary-path> <pattern>")]
+    #[error("usage: {program} [--quiet] <binary-path> <pattern>")]
     Usage { program: String },
     #[error("invalid pattern syntax")]
     PatternParse {
@@ -65,65 +74,73 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<usize, CliError> {
-    let (path, signature) = parse_args()?;
-    let pat = pattern::parse(&signature).map_err(|source| CliError::PatternParse { source })?;
-    let bytes = fs::read(&path).map_err(|source| CliError::ReadBinary {
-        path: path.clone(),
+    let args = parse_args()?;
+    let pat =
+        pattern::parse(&args.signature).map_err(|source| CliError::PatternParse { source })?;
+    let bytes = fs::read(&args.path).map_err(|source| CliError::ReadBinary {
+        path: args.path.clone(),
         source,
     })?;
     let object = Object::parse(&bytes).map_err(|source| CliError::ParseObject {
-        path: path.clone(),
+        path: args.path.clone(),
         source,
     })?;
 
     match object {
-        Object::Elf(_) => scan_elf(&bytes, &pat),
-        Object::PE(_) => scan_pe(&bytes, &pat),
-        Object::Mach(_) => scan_mach(&bytes, &pat),
-        _ => Err(CliError::UnsupportedFormat { path }),
+        Object::Elf(_) => scan_elf(&bytes, &pat, args.quiet),
+        Object::PE(_) => scan_pe(&bytes, &pat, args.quiet),
+        Object::Mach(_) => scan_mach(&bytes, &pat, args.quiet),
+        _ => Err(CliError::UnsupportedFormat { path: args.path }),
     }
 }
 
-fn parse_args() -> Result<(String, String), CliError> {
+fn parse_args() -> Result<Args, CliError> {
     let mut args = env::args();
     let program = args.next().unwrap_or_else(|| "sigscan".to_owned());
-    let Some(path) = args.next() else {
-        return Err(CliError::Usage { program });
-    };
-    let Some(signature) = args.next() else {
-        return Err(CliError::Usage { program });
-    };
-    if args.next().is_some() {
-        return Err(CliError::Usage { program });
+
+    let mut quiet = false;
+    let mut positional = Vec::with_capacity(2);
+    for arg in args {
+        match arg.as_str() {
+            "--quiet" | "-q" => quiet = true,
+            _ => positional.push(arg),
+        }
     }
-    Ok((path, signature))
+
+    let [path, signature] =
+        <[String; 2]>::try_from(positional).map_err(|_| CliError::Usage { program })?;
+    Ok(Args {
+        path,
+        signature,
+        quiet,
+    })
 }
 
-fn scan_elf(bytes: &[u8], pat: &[pattern::Atom]) -> Result<usize, CliError> {
+fn scan_elf(bytes: &[u8], pat: &[pattern::Atom], quiet: bool) -> Result<usize, CliError> {
     let file = elf::ElfFile::from_bytes(bytes).map_err(|source| CliError::ElfScan { source })?;
     let mut matches = file.scanner().matches_code(pat);
-    Ok(scan_with_next(pattern::save_len(pat), |save| {
+    Ok(scan_with_next(pattern::save_len(pat), quiet, |save| {
         matches.next(save)
     }))
 }
 
-fn scan_pe(bytes: &[u8], pat: &[pattern::Atom]) -> Result<usize, CliError> {
+fn scan_pe(bytes: &[u8], pat: &[pattern::Atom], quiet: bool) -> Result<usize, CliError> {
     let file = pe64::PeFile::from_bytes(bytes).map_err(|source| CliError::PeScan { source })?;
     let mut matches = file.scanner().matches_code(pat);
-    Ok(scan_with_next(pattern::save_len(pat), |save| {
+    Ok(scan_with_next(pattern::save_len(pat), quiet, |save| {
         matches.next(save)
     }))
 }
 
-fn scan_mach(bytes: &[u8], pat: &[pattern::Atom]) -> Result<usize, CliError> {
+fn scan_mach(bytes: &[u8], pat: &[pattern::Atom], quiet: bool) -> Result<usize, CliError> {
     let file = mach::MachFile::from_bytes(bytes).map_err(|source| CliError::MachScan { source })?;
     let mut matches = file.scanner().matches_code(pat);
-    Ok(scan_with_next(pattern::save_len(pat), |save| {
+    Ok(scan_with_next(pattern::save_len(pat), quiet, |save| {
         matches.next(save)
     }))
 }
 
-fn scan_with_next<F>(save_len: usize, mut next_match: F) -> usize
+fn scan_with_next<F>(save_len: usize, quiet: bool, mut next_match: F) -> usize
 where
     F: FnMut(&mut [u64]) -> bool,
 {
@@ -136,11 +153,13 @@ where
 
     while next_match(&mut save) {
         total += 1;
-        println!(
-            "MATCH {total:04} base=0x{:X} save={}",
-            save[0],
-            format_slots(&save)
-        );
+        if !quiet {
+            println!(
+                "MATCH {total:04} base=0x{:X} save={}",
+                save[0],
+                format_slots(&save)
+            );
+        }
     }
 
     total
