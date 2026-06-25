@@ -23,6 +23,9 @@ struct ExecScratch {
     calls: Vec<Offset>,
     save_log: Vec<(usize, Offset)>,
     stack: Vec<BacktrackState>,
+    /// Index of the span currently being scanned, used to seed `ExecReader` so it
+    /// skips the per-candidate `find_span` binary search for in-span reads.
+    current_span: Option<usize>,
 }
 
 impl ExecScratch {
@@ -173,10 +176,12 @@ struct ExecReader<'a, B: BinaryView> {
 }
 
 impl<'a, B: BinaryView> ExecReader<'a, B> {
-    fn new(view: &'a B, start: Offset) -> Self {
+    fn new(view: &'a B, start: Offset, span_hint: Option<usize>) -> Self {
+        // Seed with the caller's span; `find_span` checks the seeded index first, so a
+        // correct hint avoids the binary search. A stale/None hint self-corrects.
         let mut reader = Self {
             view,
-            span_index: None,
+            span_index: span_hint,
         };
         reader.span_index = reader.find_span(start);
         reader
@@ -418,7 +423,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         let mut scratch = vec![0; required_slots];
         let mut found_once = false;
 
-        for span in self.view.code_spans() {
+        for (span_index, span) in self.view.code_spans().iter().enumerate() {
             let mut cursor = span.mapped.start;
             loop {
                 let save_buf: &mut [Offset] = if found_once {
@@ -428,6 +433,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 };
                 let matched = self.find_next_in_span(
                     span,
+                    span_index,
                     cursor,
                     pat,
                     save_buf,
@@ -461,6 +467,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     fn find_next_in_span(
         &self,
         span: &CodeSpan,
+        span_index: usize,
         start: Offset,
         pat: &[Atom],
         save: &mut [Offset],
@@ -474,6 +481,10 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         if start >= span.mapped.end {
             return None;
         }
+
+        // Seed exec's ExecReader with this span so in-span reads skip the find_span
+        // binary search.
+        scratch.current_span = Some(span_index);
 
         if anchor_len == 0 {
             return self.scan_range_linear(
@@ -803,12 +814,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         save: &mut [Offset],
         scratch: &mut ExecScratch,
     ) -> bool {
+        let span_hint = scratch.current_span;
         scratch.reset_from_save(save);
         let work_save = &mut scratch.work_save;
         let mut cursor = start;
         let mut pc = 0usize;
         let mut fuzzy = None;
-        let mut reader = ExecReader::new(self.view, cursor);
+        let mut reader = ExecReader::new(self.view, cursor, span_hint);
 
         loop {
             let Some(atom) = pat.get(pc) else {
@@ -1057,6 +1069,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         save: &mut [Offset],
         scratch: &mut ExecScratch,
     ) -> bool {
+        let span_hint = scratch.current_span;
         scratch.reset_from_save(save);
         let work_save = &mut scratch.work_save;
         scratch.calls.clear();
@@ -1099,7 +1112,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let mut cursor = state.cursor;
             let mut pc = state.pc;
             let mut fuzzy = state.fuzzy;
-            let mut reader = ExecReader::new(self.view, cursor);
+            let mut reader = ExecReader::new(self.view, cursor, span_hint);
             loop {
                 let Some(atom) = pat.get(pc) else {
                     scratch.commit_to_save(save);
@@ -1469,6 +1482,7 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             }
             let matched_at = self.scanner.find_next_in_span(
                 span,
+                self.range_index,
                 start,
                 self.pat,
                 save,
