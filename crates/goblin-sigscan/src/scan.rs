@@ -302,6 +302,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             plan.anchor,
             plan.anchor_len,
             plan.anchor_offset,
+            &plan.anchor_jumps,
             save,
         )
     }
@@ -344,6 +345,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             pat.anchor,
             pat.anchor_len,
             pat.anchor_offset,
+            &pat.anchor_jumps,
             save,
         )
     }
@@ -409,6 +411,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: [u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        anchor_jumps: &[u8; 256],
         save: &mut [Offset],
     ) -> bool {
         let mut exec_scratch = ExecScratch::default();
@@ -432,6 +435,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     &anchor,
                     anchor_len,
                     anchor_offset,
+                    anchor_jumps,
                     &mut exec_scratch,
                 );
                 let Some(found_at) = matched else {
@@ -464,6 +468,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        anchor_jumps: &[u8; 256],
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         if start >= span.mapped.end {
@@ -502,6 +507,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             anchor,
             anchor_len,
             anchor_offset,
+            anchor_jumps,
             scratch,
         )
     }
@@ -645,6 +651,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        anchor_jumps: &[u8; 256],
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let Some(bytes) = self.view.image().get(span.file.clone()) else {
@@ -657,6 +664,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                anchor_jumps,
                 scratch,
             );
         };
@@ -671,6 +679,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                anchor_jumps,
                 scratch,
             );
         };
@@ -684,6 +693,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                anchor_jumps,
                 scratch,
             );
         };
@@ -698,6 +708,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 anchor,
                 anchor_len,
                 anchor_offset,
+                anchor_jumps,
                 scratch,
             );
         };
@@ -705,17 +716,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             return None;
         }
 
-        let mut jumps = [anchor_len as u8; 256];
-        for (index, byte) in prefix.iter().take(anchor_len.saturating_sub(1)).enumerate() {
-            jumps[usize::from(*byte)] = (anchor_len - index - 1) as u8;
-        }
-
         let last = prefix[anchor_len - 1];
         let mut index = 0usize;
         let max_index = haystack.len() - anchor_len;
         while index <= max_index {
             let probe = haystack[index + anchor_len - 1];
-            let jump = usize::from(jumps[usize::from(probe)].max(1));
+            let jump = usize::from(anchor_jumps[usize::from(probe)].max(1));
             if probe == last
                 && haystack
                     .get(index..index + anchor_len)
@@ -746,6 +752,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor: &[u8; ANCHOR_MAX_LEN],
         anchor_len: usize,
         anchor_offset: u64,
+        anchor_jumps: &[u8; 256],
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         let prefix = &anchor[..anchor_len];
@@ -759,11 +766,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             return None;
         }
 
-        let mut jumps = [anchor_len as u8; 256];
-        for (index, byte) in prefix.iter().take(anchor_len.saturating_sub(1)).enumerate() {
-            jumps[usize::from(*byte)] = (anchor_len - index - 1) as u8;
-        }
-
         let last = prefix[anchor_len - 1];
         let mut index = 0u64;
         let max_index = total - window;
@@ -775,7 +777,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 continue;
             };
 
-            let jump = u64::from(jumps[usize::from(probe)].max(1));
+            let jump = u64::from(anchor_jumps[usize::from(probe)].max(1));
             if probe == last
                 && prefix_matches_mapped(self.view, cursor, prefix)
                 && self.exec(
