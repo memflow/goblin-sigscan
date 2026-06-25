@@ -2053,6 +2053,66 @@ mod tests {
     }
 
     #[test]
+    fn offset_map_advances_across_skips_and_anchors_deep() {
+        // A skip pushes the distinctive run far into the prefix; it must still be mapped
+        // at the right offset and chosen as the anchor.
+        let map = build_offset_map(&[
+            Atom::Save(0),
+            Atom::Byte(0x48),
+            Atom::Skip(200),
+            Atom::Byte(0xde),
+            Atom::Byte(0xad),
+        ]);
+        assert_eq!(map[0], Some(0x48));
+        assert_eq!(map[201], Some(0xde));
+        assert_eq!(map[202], Some(0xad));
+
+        let (anchor, len, offset) = select_anchor_from_map(&map);
+        assert_eq!(len, 2);
+        assert_eq!(offset, 201);
+        assert_eq!(&anchor[..len], &[0xde, 0xad]);
+    }
+
+    #[test]
+    fn offset_map_stops_at_the_cap() {
+        // A literal run pushed past ANCHOR_MAP_CAP is not mapped; the map stops at the cap.
+        let map = build_offset_map(&[
+            Atom::Save(0),
+            Atom::Byte(0x48),
+            Atom::Skip(255),
+            Atom::Skip(255),
+            Atom::Byte(0xde),
+            Atom::Byte(0xad),
+        ]);
+        assert!(map.len() <= super::ANCHOR_MAP_CAP);
+        assert!(!map.contains(&Some(0xde)));
+    }
+
+    #[test]
+    fn scan_matches_when_strong_run_is_beyond_anchor_cap() {
+        // The distinctive run sits past the cap, so the anchor falls back to the weak
+        // leading byte; exec must still verify the full pattern and find the match.
+        let mut bytes = vec![0u8; 400];
+        bytes[50] = 0xaa;
+        bytes[50 + 1 + 300] = 0xde;
+        bytes[50 + 1 + 300 + 1] = 0xad;
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = [
+            Atom::Save(0),
+            Atom::Byte(0xaa),
+            Atom::Skip(255),
+            Atom::Skip(45),
+            Atom::Byte(0xde),
+            Atom::Byte(0xad),
+        ];
+        let mut save = [0u64; 1];
+
+        assert!(scanner.matches_code(&pat).next(&mut save));
+        assert_eq!(save[0], 50);
+    }
+
+    #[test]
     fn code_ranges_yield_mapped_ranges_in_order() {
         let view = TestView {
             bytes: vec![0u8; 16],
