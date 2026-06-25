@@ -5,8 +5,9 @@ use memchr::memchr_iter;
 
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
-const PREFIX_BUF_LEN: usize = 16;
 const ANCHOR_MAX_LEN: usize = 4;
+/// How far into the fixed-offset prefix the anchor search looks (bounds work on big skips).
+const ANCHOR_MAP_CAP: usize = 256;
 
 #[derive(Copy, Clone, Debug)]
 struct BacktrackState {
@@ -1543,30 +1544,51 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
     }
 }
 
-fn build_prefix(pat: &[Atom]) -> ([u8; PREFIX_BUF_LEN], usize) {
-    let mut prefix = [0u8; PREFIX_BUF_LEN];
-    let mut len = 0usize;
+/// Builds a map of known bytes at fixed offsets from the match start, spanning wildcards,
+/// skips and reads up to the first atom that breaks fixed-offset reasoning (jumps, ranges,
+/// groups, back-rewind, pointer-width skip). `None` marks a wildcard/unknown byte.
+///
+/// Unlike a leading-run-only prefix, this lets the anchor land on the most selective
+/// literal run *anywhere* in the linear prefix. The anchor stays a pure necessary-condition
+/// filter, so the full pattern execution still verifies every candidate.
+fn build_offset_map(pat: &[Atom]) -> Vec<Option<u8>> {
+    let mut map: Vec<Option<u8>> = Vec::new();
+    let mut offset = 0usize;
+    let mut masked = false;
     for atom in pat {
+        if offset >= ANCHOR_MAP_CAP {
+            break;
+        }
         match *atom {
             Atom::Byte(byte) => {
-                if len >= PREFIX_BUF_LEN {
-                    break;
+                if map.len() <= offset {
+                    map.resize(offset + 1, None);
                 }
-                prefix[len] = byte;
-                len += 1;
+                if !masked {
+                    map[offset] = Some(byte);
+                }
+                masked = false;
+                offset += 1;
             }
-            Atom::Save(_) | Atom::Aligned(_) | Atom::Nop => {}
+            Atom::Fuzzy(_) => masked = true,
+            // Skip(0) means pointer width (view-dependent), so stop the fixed map there.
+            Atom::Skip(0) => break,
+            Atom::Skip(n) => offset += usize::from(n),
+            Atom::ReadI8(_) | Atom::ReadU8(_) => offset += 1,
+            Atom::ReadI16(_) | Atom::ReadU16(_) => offset += 2,
+            Atom::ReadI32(_) | Atom::ReadU32(_) => offset += 4,
+            Atom::Save(_) | Atom::Aligned(_) | Atom::Nop | Atom::Zero(_) | Atom::Check(_) => {}
             _ => break,
         }
     }
-    (prefix, len)
+    map
 }
 
 fn analyze_pattern(pat: &[Atom]) -> PatternPlan {
     let required_slots = save_len(pat);
     let linear_exec = is_linear_pattern(pat);
-    let (prefix, prefix_len) = build_prefix(pat);
-    let (anchor, anchor_len, anchor_offset) = select_anchor(&prefix, prefix_len);
+    let map = build_offset_map(pat);
+    let (anchor, anchor_len, anchor_offset) = select_anchor_from_map(&map);
     let anchor_jumps = build_anchor_jumps(&anchor, anchor_len);
     PatternPlan {
         required_slots,
@@ -1587,40 +1609,39 @@ fn build_anchor_jumps(anchor: &[u8; ANCHOR_MAX_LEN], anchor_len: usize) -> [u8; 
     jumps
 }
 
-/// Chooses the best fixed-size literal anchor window from the prefix.
-///
-/// The scanner uses this anchor for candidate filtering before running full
-/// pattern execution. We score each possible window and select the one with the
-/// highest expected selectivity (ties prefer later windows for slightly better
-/// locality with following atoms).
-fn select_anchor(
-    prefix: &[u8; PREFIX_BUF_LEN],
-    prefix_len: usize,
-) -> ([u8; ANCHOR_MAX_LEN], usize, u64) {
+/// Selects the most selective fixed-size literal window from the offset map, preferring
+/// longer windows (more selective for the quick search) then higher [`anchor_window_score`]
+/// (ties prefer later windows). Returns the anchor bytes, its length, and its offset from
+/// the match start.
+fn select_anchor_from_map(map: &[Option<u8>]) -> ([u8; ANCHOR_MAX_LEN], usize, u64) {
     let mut anchor = [0u8; ANCHOR_MAX_LEN];
-    if prefix_len == 0 {
-        return (anchor, 0, 0);
-    }
-
-    let anchor_len = prefix_len.min(ANCHOR_MAX_LEN);
-    let mut best_start = 0usize;
-    let mut best_score = 0u32;
-    for start in 0..=prefix_len - anchor_len {
-        let score = anchor_window_score(&prefix[start..start + anchor_len]);
-        if score > best_score || (score == best_score && start > best_start) {
-            best_score = score;
-            best_start = start;
+    for win in (1..=ANCHOR_MAX_LEN).rev() {
+        if map.len() < win {
+            continue;
+        }
+        let mut best: Option<(u32, usize)> = None;
+        for start in 0..=map.len() - win {
+            if !map[start..start + win].iter().all(|slot| slot.is_some()) {
+                continue;
+            }
+            let mut buf = [0u8; ANCHOR_MAX_LEN];
+            for (k, &slot) in map[start..start + win].iter().enumerate() {
+                buf[k] = slot.expect("window verified to be all-some");
+            }
+            let score = anchor_window_score(&buf[..win]);
+            match best {
+                Some((best_score, _)) if score < best_score => {}
+                _ => best = Some((score, start)),
+            }
+        }
+        if let Some((_, start)) = best {
+            for (k, &slot) in map[start..start + win].iter().enumerate() {
+                anchor[k] = slot.expect("window verified to be all-some");
+            }
+            return (anchor, win, start as u64);
         }
     }
-
-    for (index, byte) in prefix[best_start..best_start + anchor_len]
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        anchor[index] = byte;
-    }
-    (anchor, anchor_len, best_start as u64)
+    (anchor, 0, 0)
 }
 
 /// Scores an anchor window by estimated filtering strength.
@@ -1715,8 +1736,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        BinaryView, CodeSpan, Offset, PreparedPattern, Scanner, build_prefix, is_linear_pattern,
-        select_anchor, span_index_for_offset,
+        BinaryView, CodeSpan, Offset, PreparedPattern, Scanner, build_offset_map,
+        is_linear_pattern, select_anchor_from_map, span_index_for_offset,
     };
     use crate::pattern::Atom;
 
@@ -1983,8 +2004,9 @@ mod tests {
     }
 
     #[test]
-    fn prefix_builder_keeps_optimizable_leading_atoms() {
-        let (prefix, len) = build_prefix(&[
+    fn offset_map_spans_zero_width_atoms_and_records_byte_offsets() {
+        // Save/Aligned/Nop/Check are zero-width, so the literal bytes keep their offsets.
+        let map = build_offset_map(&[
             Atom::Save(0),
             Atom::Aligned(0),
             Atom::Nop,
@@ -1995,22 +2017,39 @@ mod tests {
             Atom::Byte(0xcc),
         ]);
 
-        assert_eq!(len, 2);
-        assert_eq!(&prefix[..len], &[0xaa, 0xbb]);
+        assert_eq!(map, vec![Some(0xaa), Some(0xbb), Some(0xcc)]);
     }
 
     #[test]
     fn anchor_selection_prefers_stronger_window_over_common_suffix() {
-        let mut prefix = [0u8; super::PREFIX_BUF_LEN];
-        let bytes = [0xde, 0xad, 0xbe, 0xef, 0x48, 0x8b, 0x05, 0x48];
-        for (index, byte) in bytes.iter().copied().enumerate() {
-            prefix[index] = byte;
-        }
+        let map: Vec<Option<u8>> = [0xde, 0xad, 0xbe, 0xef, 0x48, 0x8b, 0x05, 0x48]
+            .into_iter()
+            .map(Some)
+            .collect();
 
-        let (anchor, len, offset) = select_anchor(&prefix, bytes.len());
+        let (anchor, len, offset) = select_anchor_from_map(&map);
         assert_eq!(len, 4);
         assert_eq!(offset, 0);
         assert_eq!(&anchor[..len], &[0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn anchor_selection_reaches_past_leading_wildcards() {
+        // `? ? 48 8b 0d 15 7c`: the anchor must skip the leading wildcards and land on
+        // the literal run (the SCAN-8 improvement over leading-run-only selection).
+        let map = vec![
+            None,
+            None,
+            Some(0x48),
+            Some(0x8b),
+            Some(0x0d),
+            Some(0x15),
+            Some(0x7c),
+        ];
+
+        let (_, len, offset) = select_anchor_from_map(&map);
+        assert_eq!(len, 4);
+        assert!(offset >= 2, "anchor must skip the leading wildcards");
     }
 
     #[test]
