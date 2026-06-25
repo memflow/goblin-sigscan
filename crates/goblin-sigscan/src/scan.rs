@@ -43,6 +43,23 @@ impl ExecScratch {
     }
 }
 
+/// Reusable scratch for uniqueness scans ([`Scanner::finds_prepared_with`]).
+///
+/// Holding one across repeated `finds` calls avoids re-allocating the executor scratch
+/// and the second-match probe buffer on every call (e.g. scanning many patterns).
+#[derive(Clone, Debug, Default)]
+pub struct FindScratch {
+    exec: ExecScratch,
+    probe: Vec<Offset>,
+}
+
+impl FindScratch {
+    /// Creates empty scratch.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 struct PatternPlan {
     required_slots: usize,
@@ -309,6 +326,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             plan.anchor_offset,
             &plan.anchor_jumps,
             save,
+            &mut FindScratch::new(),
         )
     }
 
@@ -339,6 +357,17 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
 
     /// Returns `true` only when a prepared pattern has exactly one code match.
     pub fn finds_prepared(&self, pat: &PreparedPattern, save: &mut [Offset]) -> bool {
+        self.finds_prepared_with(pat, save, &mut FindScratch::new())
+    }
+
+    /// Like [`Self::finds_prepared`] but reuses caller-provided [`FindScratch`], avoiding
+    /// per-call scratch allocation across repeated uniqueness scans.
+    pub fn finds_prepared_with(
+        &self,
+        pat: &PreparedPattern,
+        save: &mut [Offset],
+        scratch: &mut FindScratch,
+    ) -> bool {
         debug_assert!(
             save.len() >= pat.required_slots,
             "caller-provided save buffer must cover all slots referenced by the prepared pattern"
@@ -352,6 +381,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             pat.anchor_offset,
             &pat.anchor_jumps,
             save,
+            scratch,
         )
     }
 
@@ -418,16 +448,20 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         anchor_offset: u64,
         anchor_jumps: &[u8; 256],
         save: &mut [Offset],
+        scratch: &mut FindScratch,
     ) -> bool {
-        let mut exec_scratch = ExecScratch::default();
-        let mut scratch = vec![0; required_slots];
+        // Probe buffer holds captures of the second-and-later candidate matches so the
+        // first match stays in `save`. `exec` and `probe` are disjoint fields, so both can
+        // be borrowed at once below.
+        scratch.probe.clear();
+        scratch.probe.resize(required_slots, 0);
         let mut found_once = false;
 
         for (span_index, span) in self.view.code_spans().iter().enumerate() {
             let mut cursor = span.mapped.start;
             loop {
                 let save_buf: &mut [Offset] = if found_once {
-                    &mut scratch
+                    &mut scratch.probe
                 } else {
                     &mut save[..required_slots]
                 };
@@ -442,7 +476,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     anchor_len,
                     anchor_offset,
                     anchor_jumps,
-                    &mut exec_scratch,
+                    &mut scratch.exec,
                 );
                 let Some(found_at) = matched else {
                     break;
