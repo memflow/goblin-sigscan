@@ -4,13 +4,19 @@
 //! scanning via [`PeFile::scanner`] and mapped-address helpers through
 //! [`crate::MappedAddressView`]. Mapped offsets in this module are PE RVAs.
 
-use std::{cell::Cell, ffi::CStr};
+use std::{
+    ffi::CStr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use goblin::pe::{
     PE,
     section_table::{IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE},
 };
 use thiserror::Error;
+
+/// Sentinel for "no cached section yet"; real section indices are always smaller.
+const NO_CACHE: usize = usize::MAX;
 
 use crate::{
     Pod, Ptr, TypedView,
@@ -36,7 +42,7 @@ pub struct PeFile<'a> {
     bytes: &'a [u8],
     pe: PE<'a>,
     code_spans: Vec<CodeSpan>,
-    section_lookup_cache: Cell<Option<usize>>,
+    section_lookup_cache: AtomicUsize,
 }
 
 impl<'a> PeFile<'a> {
@@ -72,6 +78,10 @@ impl<'a> PeFile<'a> {
                 if !is_code {
                     return None;
                 }
+                // Both the mapped and file extents use `size_of_raw_data` so they stay
+                // equal-length (the scanner maps mapped<->file 1:1 within a span). This
+                // can include trailing file-alignment padding and does not model a
+                // section whose virtual size differs from its raw size.
                 let start = u64::from(section.virtual_address);
                 let end = start.checked_add(u64::from(section.size_of_raw_data))?;
                 let file_start = usize::try_from(section.pointer_to_raw_data).ok()?;
@@ -87,7 +97,7 @@ impl<'a> PeFile<'a> {
             bytes,
             pe,
             code_spans,
-            section_lookup_cache: Cell::new(None),
+            section_lookup_cache: AtomicUsize::new(NO_CACHE),
         })
     }
 
@@ -285,15 +295,16 @@ impl<'a> PeFile<'a> {
             return usize::try_from(rva).ok();
         }
 
-        if let Some(index) = self.section_lookup_cache.get()
-            && let Some(file_offset) = self.section_file_offset(index, rva)
+        let cached = self.section_lookup_cache.load(Ordering::Relaxed);
+        if cached != NO_CACHE
+            && let Some(file_offset) = self.section_file_offset(cached, rva)
         {
             return Some(file_offset);
         }
 
         for (index, _) in self.pe.sections.iter().enumerate() {
             if let Some(file_offset) = self.section_file_offset(index, rva) {
-                self.section_lookup_cache.set(Some(index));
+                self.section_lookup_cache.store(index, Ordering::Relaxed);
                 return Some(file_offset);
             }
         }

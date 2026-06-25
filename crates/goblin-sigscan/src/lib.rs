@@ -122,6 +122,7 @@ pub use goblin_sigscan_macros::pattern;
 
 mod address;
 pub mod elf;
+mod loadmap;
 pub mod mach;
 pub mod pattern;
 pub mod pe64;
@@ -130,3 +131,12 @@ mod typed;
 pub use address::{FromLeBytes, MappedAddressView};
 pub use scan::{BinaryView, CodeSpan, Matches, Offset, PreparedPattern, Scanner};
 pub use typed::{Pod, Ptr, TypedView, Va};
+
+// The format wrappers use atomic resolution caches so a parsed image can be shared
+// across threads for parallel scanning. Assert that statically.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<pe64::PeFile<'static>>();
+    assert_sync::<elf::ElfFile<'static>>();
+    assert_sync::<mach::MachFile<'static>>();
+};
