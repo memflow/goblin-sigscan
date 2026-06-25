@@ -38,6 +38,7 @@ pub struct MachFile<'a> {
     code_spans: Vec<CodeSpan>,
     load_ranges: Vec<LoadRange>,
     load_lookup_cache: Cell<Option<usize>>,
+    pointer_width: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,23 +73,28 @@ impl<'a> MachFile<'a> {
         let mut code_spans = Vec::new();
         let mut load_ranges = Vec::new();
 
+        // Pointer width follows the parsed image's class so `*`/`Skip(0)`/`Push(0)`
+        // read the right number of bytes on 32-bit Mach-O binaries.
+        let pointer_width;
         match &mach {
             Mach::Binary(binary) => {
                 collect_ranges(binary.segments.iter(), &mut code_spans, &mut load_ranges)?;
+                pointer_width = if binary.is_64 { 8 } else { 4 };
             }
             Mach::Fat(fat) => {
-                let mut found = false;
+                let mut width = None;
                 for index in 0..fat.narches {
                     let arch = fat.get(index)?;
                     if let SingleArch::MachO(binary) = arch {
                         collect_ranges(binary.segments.iter(), &mut code_spans, &mut load_ranges)?;
-                        found = true;
+                        width = Some(if binary.is_64 { 8 } else { 4 });
                         break;
                     }
                 }
-                if !found {
+                let Some(width) = width else {
                     return Err(MachError::NoBinaryArch);
-                }
+                };
+                pointer_width = width;
             }
         }
 
@@ -98,6 +104,7 @@ impl<'a> MachFile<'a> {
             code_spans,
             load_ranges,
             load_lookup_cache: Cell::new(None),
+            pointer_width,
         })
     }
 
@@ -318,6 +325,10 @@ impl BinaryView for MachFile<'_> {
 
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
         self.offset_to_file_offset(offset)
+    }
+
+    fn pointer_size_bytes(&self) -> u8 {
+        self.pointer_width
     }
 }
 

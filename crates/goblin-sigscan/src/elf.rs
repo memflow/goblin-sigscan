@@ -333,4 +333,10 @@ impl BinaryView for ElfFile<'_> {
     fn mapped_to_file_offset(&self, offset: Offset) -> Option<usize> {
         self.offset_to_file_offset(offset)
     }
+
+    fn pointer_size_bytes(&self) -> u8 {
+        // 32-bit ELFs are accepted here, so report the true pointer width instead of
+        // the 8-byte default; `*` (`Ptr`), `Skip(0)`, and `Push(0)` depend on it.
+        if self.elf.is_64 { 8 } else { 4 }
+    }
 }
