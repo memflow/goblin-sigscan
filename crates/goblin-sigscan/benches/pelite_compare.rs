@@ -69,6 +69,31 @@ fn bench_pe64_goblin_vs_pelite(c: &mut Criterion) {
         PatternCase::parse("skip_range", "48 8b [3-10] 48 89"),
     ];
 
+    // Guard the A/B comparison so we don't silently benchmark divergent matching
+    // semantics (a regression that finds nothing would otherwise look fast). We compare
+    // the first match, not total counts: the engines define their code-scan scope
+    // differently (pelite scans one header code_range; goblin scans each executable
+    // section), so totals legitimately differ but the first code match must agree.
+    for case in &cases {
+        let mut goblin_save = [0u64; SAVE_SLOTS];
+        let mut goblin_matches = goblin_scanner.matches_code(&case.goblin_atoms);
+        let goblin_first = goblin_matches
+            .next(&mut goblin_save[..case.goblin_save_slots])
+            .then_some(goblin_save[0]);
+
+        let mut pelite_save = [0u32; SAVE_SLOTS];
+        let mut pelite_matches = pelite_scanner.matches_code(&case.pelite_atoms);
+        let pelite_first = pelite_matches
+            .next(&mut pelite_save)
+            .then_some(u64::from(pelite_save[0]));
+
+        assert_eq!(
+            goblin_first, pelite_first,
+            "goblin-sigscan and pelite disagree on the first match for '{}' ({goblin_first:?} vs {pelite_first:?})",
+            case.label
+        );
+    }
+
     let mut first_group = c.benchmark_group("pe64_compare/first_match");
     first_group.throughput(Throughput::Bytes(bytes.len() as u64));
 
