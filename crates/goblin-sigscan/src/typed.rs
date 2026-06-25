@@ -240,7 +240,9 @@ mod tests {
         // mapped 100..108 -> file 0..8 ('abcdefgh', no NUL); the next mapped region
         // starts at 200, so the string can't terminate without leaving its region.
         let view = TestView {
-            bytes: vec![b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'f', b'o', b'o', 0],
+            bytes: vec![
+                b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'f', b'o', b'o', 0,
+            ],
         };
         let ptr = Ptr::<u8>::from_mapped(100).cast::<CStr>();
         assert!(view.deref_c_str(ptr).is_none());

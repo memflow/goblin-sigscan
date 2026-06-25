@@ -760,10 +760,7 @@ impl Parser {
     }
 }
 
-fn compile_alternatives(
-    alts: Vec<Vec<Atom>>,
-    position: usize,
-) -> Result<Vec<Atom>, ParsePatError> {
+fn compile_alternatives(alts: Vec<Vec<Atom>>, position: usize) -> Result<Vec<Atom>, ParsePatError> {
     debug_assert!(!alts.is_empty(), "alternatives parser guarantees non-empty");
 
     // Fold from the last arm backwards, wrapping each preceding arm in `Case`/`Break`.
