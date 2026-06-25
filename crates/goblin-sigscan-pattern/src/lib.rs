@@ -134,7 +134,8 @@ pub enum Atom {
     Zero(u8),
     /// Rewinds the cursor by a fixed number of bytes.
     Back(u8),
-    /// Fails if the cursor is not aligned to `(1 << value)` bytes.
+    /// Fails if the cursor is not aligned to `(1 << value)` bytes. `value` must be
+    /// `< 64` (the `@n` parser caps it at 35); larger values overflow the shift.
     Aligned(u8),
     /// Fails if the cursor does not equal the value in the given save slot.
     Check(u8),
@@ -269,6 +270,8 @@ pub fn save_len(pat: &[Atom]) -> usize {
 /// - Supported: hex bytes, `?`, `'`, `%`, `$`, `*`, `{...}`, `[N]`, `[A-B]`, `@n`,
 ///   `i1/i2/i4`, `u1/u2/u4`, `z`, alternation, and strings.
 /// - Programmatic-only atoms (not parser syntax): `Pir(slot)`.
+/// - Trailing skips are dropped: any `?`/`[N]`/`[A-B]` at the very end of a pattern is
+///   removed, because a match's end position is not captured (mirrors pelite).
 ///
 /// # Save-slot semantics
 ///
@@ -397,22 +400,20 @@ pub fn parse(pat: &str) -> Result<Pattern, ParsePatError> {
     Ok(result)
 }
 
-struct Parser<'a> {
+struct Parser {
     chars: Vec<(usize, char)>,
     cursor: usize,
     save: u8,
     depth: u16,
-    _source: &'a str,
 }
 
-impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
+impl Parser {
+    fn new(source: &str) -> Self {
         Self {
             chars: source.char_indices().collect(),
             cursor: 0,
             save: 1,
             depth: 0,
-            _source: source,
         }
     }
 
@@ -617,6 +618,14 @@ impl<'a> Parser<'a> {
             self.save = group_save;
             self.depth = group_depth;
             let seq = self.parse_sequence(&['|', ')'])?;
+            // An arm must balance its own `{`/`}`; otherwise the per-arm depth reset
+            // below would silently swallow a dangling sub-pattern (e.g. `(e8 ${ | 90)`).
+            if self.depth != group_depth {
+                return Err(ParsePatError {
+                    kind: PatError::StackError,
+                    position,
+                });
+            }
             max_save = max_save.max(self.save);
             alternatives.push(seq);
             if alternatives.len() > MAX_GROUP_ALTERNATIVES {
@@ -645,13 +654,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if alternatives.is_empty() {
-            return Err(ParsePatError {
-                kind: PatError::GroupOperand,
-                position,
-            });
-        }
-
+        // `alternatives` always holds at least the arm pushed before the loop could
+        // break, so no emptiness check is needed here.
         self.save = max_save;
         self.depth = group_depth;
 
@@ -757,40 +761,44 @@ impl<'a> Parser<'a> {
 }
 
 fn compile_alternatives(
-    mut alts: Vec<Vec<Atom>>,
+    alts: Vec<Vec<Atom>>,
     position: usize,
 ) -> Result<Vec<Atom>, ParsePatError> {
     debug_assert!(!alts.is_empty(), "alternatives parser guarantees non-empty");
-    if alts.len() == 1 {
-        let only = alts
-            .pop()
-            .expect("alternatives parser guarantees exactly one arm remains");
-        return Ok(only);
-    }
 
-    let first = alts.remove(0);
-    let rest = compile_alternatives(alts, position)?;
-    let case_skip = u16::try_from(first.len() + 2).map_err(|_| ParsePatError {
-        kind: PatError::PatternTooComplex,
-        position,
-    })?;
-    let break_skip = u16::try_from(rest.len()).map_err(|_| ParsePatError {
-        kind: PatError::PatternTooComplex,
-        position,
-    })?;
+    // Fold from the last arm backwards, wrapping each preceding arm in `Case`/`Break`.
+    // This is the iterative equivalent of the old right-recursion and produces the
+    // identical atom stream, but without recursion proportional to the arm count.
+    let mut iter = alts.into_iter().rev();
+    let mut acc = iter
+        .next()
+        .expect("alternatives parser guarantees at least one arm");
 
-    let mut out = Vec::with_capacity(2 + first.len() + rest.len());
-    out.push(Atom::Case(case_skip));
-    out.extend(first);
-    out.push(Atom::Break(break_skip));
-    out.extend(rest);
-    if out.len() > MAX_PATTERN_ATOMS {
-        return Err(ParsePatError {
+    for arm in iter {
+        let case_skip = u16::try_from(arm.len() + 2).map_err(|_| ParsePatError {
             kind: PatError::PatternTooComplex,
             position,
-        });
+        })?;
+        let break_skip = u16::try_from(acc.len()).map_err(|_| ParsePatError {
+            kind: PatError::PatternTooComplex,
+            position,
+        })?;
+
+        let mut out = Vec::with_capacity(2 + arm.len() + acc.len());
+        out.push(Atom::Case(case_skip));
+        out.extend(arm);
+        out.push(Atom::Break(break_skip));
+        out.append(&mut acc);
+        if out.len() > MAX_PATTERN_ATOMS {
+            return Err(ParsePatError {
+                kind: PatError::PatternTooComplex,
+                position,
+            });
+        }
+        acc = out;
     }
-    Ok(out)
+
+    Ok(acc)
 }
 
 fn hex_value(ch: char) -> Option<u8> {
@@ -964,6 +972,19 @@ mod tests {
                 Atom::Byte(0x42),
                 Atom::Save(2),
             ])
+        );
+    }
+
+    #[test]
+    fn group_arm_with_unbalanced_brace_is_rejected() {
+        // A `{` opened in one arm and never closed must not be silently swallowed at
+        // the arm boundary.
+        assert_eq!(
+            parse("(e8 ${ | 90)") as Result<Vec<Atom>, ParsePatError>,
+            Err(ParsePatError {
+                kind: PatError::StackError,
+                position: 0,
+            })
         );
     }
 
