@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "parse_perf"
 harness = false
+
+[[bench]]
+name = "scan_anchor"
+harness = false
