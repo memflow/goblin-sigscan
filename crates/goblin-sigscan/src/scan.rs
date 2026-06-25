@@ -1105,6 +1105,9 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             }
         }
 
+        // Reuse one reader across all backtrack states; its span cache persists (and
+        // self-corrects), so popped states don't each re-run find_span.
+        let mut reader = ExecReader::new(self.view, start, span_hint);
         while let Some(state) = scratch.stack.pop() {
             scratch.calls.truncate(state.calls_len);
             rollback(work_save, &mut scratch.save_log, state.save_log_len);
@@ -1112,7 +1115,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             let mut cursor = state.cursor;
             let mut pc = state.pc;
             let mut fuzzy = state.fuzzy;
-            let mut reader = ExecReader::new(self.view, cursor, span_hint);
             loop {
                 let Some(atom) = pat.get(pc) else {
                     scratch.commit_to_save(save);
