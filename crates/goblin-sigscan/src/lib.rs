@@ -129,7 +129,7 @@ pub mod pe64;
 mod scan;
 mod typed;
 pub use address::{FromLeBytes, MappedAddressView};
-pub use scan::{BinaryView, CodeSpan, Matches, Offset, PreparedPattern, Scanner};
+pub use scan::{BinaryView, CodeSpan, FindScratch, Matches, Offset, PreparedPattern, Scanner};
 pub use typed::{Pod, Ptr, TypedView, Va};
 
 // The format wrappers use atomic resolution caches so a parsed image can be shared
