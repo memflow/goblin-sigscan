@@ -69,7 +69,7 @@ impl<'a> PeFile<'a> {
         if !pe.is_64 {
             return Err(PeError::NotPe64);
         }
-        let code_spans = pe
+        let mut code_spans: Vec<CodeSpan> = pe
             .sections
             .iter()
             .filter_map(|section| {
@@ -93,6 +93,9 @@ impl<'a> PeFile<'a> {
                 })
             })
             .collect();
+        // Sort by mapped start: span_index_for_offset (binary search) and
+        // ExecReader::find_span assume ascending, non-overlapping spans.
+        code_spans.sort_by_key(|span| span.mapped.start);
         Ok(Self {
             bytes,
             pe,

@@ -126,6 +126,32 @@ fn pointer_width_follows_image_class() {
 }
 
 #[test]
+fn code_spans_are_sorted_by_mapped_start() {
+    use goblin_sigscan::{BinaryView, CodeSpan};
+
+    fn assert_sorted(spans: &[CodeSpan]) {
+        assert!(
+            spans
+                .windows(2)
+                .all(|w| w[0].mapped.start <= w[1].mapped.start),
+            "code spans must be ascending by mapped.start (span lookups assume it)"
+        );
+    }
+
+    let pe_bytes = fixture_bytes(PE64_FIXTURE);
+    let pe = PeFile::from_bytes(&pe_bytes).expect("PE64 fixture should parse");
+    assert_sorted(pe.code_spans());
+
+    let elf_bytes = fixture_bytes(ELF64_FIXTURE);
+    let elf = ElfFile::from_bytes(&elf_bytes).expect("ELF fixture should parse");
+    assert_sorted(elf.code_spans());
+
+    let mach_bytes = fixture_bytes(MACH_FIXTURE);
+    let mach = MachFile::from_bytes(&mach_bytes).expect("Mach-O fixture should parse");
+    assert_sorted(mach.code_spans());
+}
+
+#[test]
 fn pe32_fixture_is_rejected_by_pe64_parser() {
     let bytes = fixture_bytes(PE32_FIXTURE);
     let err = PeFile::from_bytes(&bytes).expect_err("PE32 fixture should be rejected by PeFile");
