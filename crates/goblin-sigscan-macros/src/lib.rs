@@ -1,6 +1,8 @@
 use goblin_sigscan_pattern::Atom;
 use proc_macro::{Delimiter, Literal, TokenStream, TokenTree};
 use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
+use quote::quote;
 
 /// Compile-time pattern parser.
 ///
@@ -37,61 +39,56 @@ fn expand(input: TokenStream) -> Result<TokenStream, String> {
     let atoms = goblin_sigscan_pattern::parse(&source)
         .map_err(|err| format!("invalid pattern syntax: {err}"))?;
     let crate_root = goblin_sigscan_crate_root();
+    let elements: Vec<TokenStream2> = atoms
+        .iter()
+        .map(|atom| atom_to_tokens(&crate_root, *atom))
+        .collect();
 
-    let body = atoms
-        .into_iter()
-        .map(atom_to_tokens)
-        .map(|atom| format!("{crate_root}::pattern::Atom::{atom}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    format!("&[{body}]")
-        .parse()
-        .map_err(|_| "failed to generate pattern tokens".to_owned())
+    Ok(quote! { &[#(#elements),*] }.into())
 }
 
 /// Builds a `::core::compile_error!("…")` invocation carrying `message`.
 fn compile_error(message: &str) -> TokenStream {
-    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("::core::compile_error!(\"{escaped}\")")
-        .parse()
-        .expect("compile_error invocation should always tokenize")
+    quote! { ::core::compile_error!(#message) }.into()
 }
 
-fn goblin_sigscan_crate_root() -> String {
-    match crate_name("goblin-sigscan") {
+fn goblin_sigscan_crate_root() -> Ident {
+    let name = match crate_name("goblin-sigscan") {
         Ok(FoundCrate::Itself) => "goblin_sigscan".to_owned(),
         Ok(FoundCrate::Name(name)) => name.replace('-', "_"),
         Err(err) => panic!("unable to resolve goblin-sigscan crate for macro expansion: {err}"),
-    }
+    };
+    Ident::new(&name, Span::call_site())
 }
 
-fn atom_to_tokens(atom: Atom) -> String {
+/// Emits `<crate>::pattern::Atom::Variant(args)` for one atom.
+fn atom_to_tokens(crate_root: &Ident, atom: Atom) -> TokenStream2 {
+    let path = quote! { #crate_root::pattern::Atom };
     match atom {
-        Atom::Byte(value) => format!("Byte({value})"),
-        Atom::Fuzzy(mask) => format!("Fuzzy({mask})"),
-        Atom::Save(slot) => format!("Save({slot})"),
-        Atom::Skip(skip) => format!("Skip({skip})"),
-        Atom::SkipRange(min, max) => format!("SkipRange({min}, {max})"),
-        Atom::Push(skip) => format!("Push({skip})"),
-        Atom::Pop => "Pop".to_owned(),
-        Atom::Jump1 => "Jump1".to_owned(),
-        Atom::Jump4 => "Jump4".to_owned(),
-        Atom::Ptr => "Ptr".to_owned(),
-        Atom::Pir(slot) => format!("Pir({slot})"),
-        Atom::ReadI8(slot) => format!("ReadI8({slot})"),
-        Atom::ReadU8(slot) => format!("ReadU8({slot})"),
-        Atom::ReadI16(slot) => format!("ReadI16({slot})"),
-        Atom::ReadU16(slot) => format!("ReadU16({slot})"),
-        Atom::ReadI32(slot) => format!("ReadI32({slot})"),
-        Atom::ReadU32(slot) => format!("ReadU32({slot})"),
-        Atom::Zero(slot) => format!("Zero({slot})"),
-        Atom::Back(n) => format!("Back({n})"),
-        Atom::Aligned(align) => format!("Aligned({align})"),
-        Atom::Check(slot) => format!("Check({slot})"),
-        Atom::Case(skip) => format!("Case({skip})"),
-        Atom::Break(skip) => format!("Break({skip})"),
-        Atom::Nop => "Nop".to_owned(),
+        Atom::Byte(value) => quote! { #path::Byte(#value) },
+        Atom::Fuzzy(mask) => quote! { #path::Fuzzy(#mask) },
+        Atom::Save(slot) => quote! { #path::Save(#slot) },
+        Atom::Skip(skip) => quote! { #path::Skip(#skip) },
+        Atom::SkipRange(min, max) => quote! { #path::SkipRange(#min, #max) },
+        Atom::Push(skip) => quote! { #path::Push(#skip) },
+        Atom::Pop => quote! { #path::Pop },
+        Atom::Jump1 => quote! { #path::Jump1 },
+        Atom::Jump4 => quote! { #path::Jump4 },
+        Atom::Ptr => quote! { #path::Ptr },
+        Atom::Pir(slot) => quote! { #path::Pir(#slot) },
+        Atom::ReadI8(slot) => quote! { #path::ReadI8(#slot) },
+        Atom::ReadU8(slot) => quote! { #path::ReadU8(#slot) },
+        Atom::ReadI16(slot) => quote! { #path::ReadI16(#slot) },
+        Atom::ReadU16(slot) => quote! { #path::ReadU16(#slot) },
+        Atom::ReadI32(slot) => quote! { #path::ReadI32(#slot) },
+        Atom::ReadU32(slot) => quote! { #path::ReadU32(#slot) },
+        Atom::Zero(slot) => quote! { #path::Zero(#slot) },
+        Atom::Back(n) => quote! { #path::Back(#n) },
+        Atom::Aligned(align) => quote! { #path::Aligned(#align) },
+        Atom::Check(slot) => quote! { #path::Check(#slot) },
+        Atom::Case(skip) => quote! { #path::Case(#skip) },
+        Atom::Break(skip) => quote! { #path::Break(#skip) },
+        Atom::Nop => quote! { #path::Nop },
     }
 }
 
