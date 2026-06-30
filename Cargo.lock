@@ -334,6 +334,8 @@ version = "0.1.0"
 dependencies = [
  "goblin-sigscan-pattern",
  "proc-macro-crate",
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]

@@ -61,14 +61,21 @@ impl FindScratch {
     }
 }
 
+/// The candidate-filter anchor: a fixed-byte window at a known offset from the match start,
+/// plus its Boyer-Moore skip table. Bundled so it threads through the scan path as one value.
+#[derive(Copy, Clone, Debug)]
+struct AnchorPlan {
+    bytes: [u8; ANCHOR_MAX_LEN],
+    len: usize,
+    offset: u64,
+    jumps: [u8; 256],
+}
+
 #[derive(Copy, Clone, Debug)]
 struct PatternPlan {
     required_slots: usize,
     linear_exec: bool,
-    anchor: [u8; ANCHOR_MAX_LEN],
-    anchor_len: usize,
-    anchor_offset: u64,
-    anchor_jumps: [u8; 256],
+    anchor: AnchorPlan,
 }
 
 /// Reusable scanner metadata and atoms for repeated scans.
@@ -77,10 +84,7 @@ pub struct PreparedPattern {
     atoms: Vec<Atom>,
     required_slots: usize,
     linear_exec: bool,
-    anchor: [u8; ANCHOR_MAX_LEN],
-    anchor_len: usize,
-    anchor_offset: u64,
-    anchor_jumps: [u8; 256],
+    anchor: AnchorPlan,
 }
 
 impl PreparedPattern {
@@ -92,9 +96,6 @@ impl PreparedPattern {
             required_slots: plan.required_slots,
             linear_exec: plan.linear_exec,
             anchor: plan.anchor,
-            anchor_len: plan.anchor_len,
-            anchor_offset: plan.anchor_offset,
-            anchor_jumps: plan.anchor_jumps,
         }
     }
 
@@ -322,10 +323,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             pat,
             plan.linear_exec,
             plan.required_slots,
-            plan.anchor,
-            plan.anchor_len,
-            plan.anchor_offset,
-            &plan.anchor_jumps,
+            &plan.anchor,
             save,
             &mut FindScratch::new(),
         )
@@ -377,10 +375,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             &pat.atoms,
             pat.linear_exec,
             pat.required_slots,
-            pat.anchor,
-            pat.anchor_len,
-            pat.anchor_offset,
-            &pat.anchor_jumps,
+            &pat.anchor,
             save,
             scratch,
         )
@@ -396,9 +391,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             range_index: 0,
             cursor: None,
             anchor: pat.anchor,
-            anchor_len: pat.anchor_len,
-            anchor_offset: pat.anchor_offset,
-            anchor_jumps: pat.anchor_jumps,
             scratch: ExecScratch::default(),
         }
     }
@@ -417,9 +409,6 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
             range_index: 0,
             cursor: None,
             anchor: plan.anchor,
-            anchor_len: plan.anchor_len,
-            anchor_offset: plan.anchor_offset,
-            anchor_jumps: plan.anchor_jumps,
             scratch: ExecScratch::default(),
         }
     }
@@ -438,16 +427,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         self.exec_backtracking(start, pat, save, scratch)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn finds_unique(
         &self,
         pat: &[Atom],
         linear_exec: bool,
         required_slots: usize,
-        anchor: [u8; ANCHOR_MAX_LEN],
-        anchor_len: usize,
-        anchor_offset: u64,
-        anchor_jumps: &[u8; 256],
+        anchor: &AnchorPlan,
         save: &mut [Offset],
         scratch: &mut FindScratch,
     ) -> bool {
@@ -473,10 +458,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                     pat,
                     save_buf,
                     linear_exec,
-                    &anchor,
-                    anchor_len,
-                    anchor_offset,
-                    anchor_jumps,
+                    anchor,
                     &mut scratch.exec,
                 );
                 let Some(found_at) = matched else {
@@ -507,10 +489,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
-        anchor: &[u8; ANCHOR_MAX_LEN],
-        anchor_len: usize,
-        anchor_offset: u64,
-        anchor_jumps: &[u8; 256],
+        anchor: &AnchorPlan,
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
         if start >= span.mapped.end {
@@ -521,7 +500,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         // binary search.
         scratch.current_span = Some(span_index);
 
-        if anchor_len == 0 {
+        if anchor.len == 0 {
             return self.scan_range_linear(
                 span.mapped.clone(),
                 start,
@@ -531,31 +510,10 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 scratch,
             );
         }
-        if anchor_len < 4 {
-            return self.scan_span_first_byte(
-                span,
-                start,
-                pat,
-                save,
-                linear_exec,
-                anchor,
-                anchor_len,
-                anchor_offset,
-                scratch,
-            );
+        if anchor.len < 4 {
+            return self.scan_span_first_byte(span, start, pat, save, linear_exec, anchor, scratch);
         }
-        self.scan_span_quick(
-            span,
-            start,
-            pat,
-            save,
-            linear_exec,
-            anchor,
-            anchor_len,
-            anchor_offset,
-            anchor_jumps,
-            scratch,
-        )
+        self.scan_span_quick(span, start, pat, save, linear_exec, anchor, scratch)
     }
 
     fn scan_range_linear(
@@ -584,11 +542,12 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
-        anchor: &[u8; ANCHOR_MAX_LEN],
-        anchor_len: usize,
-        anchor_offset: u64,
+        plan: &AnchorPlan,
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
+        let anchor = &plan.bytes;
+        let anchor_len = plan.len;
+        let anchor_offset = plan.offset;
         let Some(bytes) = self.view.image().get(span.file.clone()) else {
             return self.scan_range_first_byte(
                 span.mapped.clone(),
@@ -596,8 +555,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_offset,
+                plan,
                 scratch,
             );
         };
@@ -609,8 +567,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_offset,
+                plan,
                 scratch,
             );
         };
@@ -621,8 +578,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_offset,
+                plan,
                 scratch,
             );
         };
@@ -633,8 +589,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_offset,
+                plan,
                 scratch,
             );
         };
@@ -668,10 +623,11 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
-        anchor: &[u8; ANCHOR_MAX_LEN],
-        anchor_offset: u64,
+        plan: &AnchorPlan,
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
+        let anchor = &plan.bytes;
+        let anchor_offset = plan.offset;
         let needle = anchor[0];
         let mut probe = cursor.checked_add(anchor_offset)?;
         while probe < range.end {
@@ -694,12 +650,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
-        anchor: &[u8; ANCHOR_MAX_LEN],
-        anchor_len: usize,
-        anchor_offset: u64,
-        anchor_jumps: &[u8; 256],
+        plan: &AnchorPlan,
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
+        let anchor = &plan.bytes;
+        let anchor_len = plan.len;
+        let anchor_offset = plan.offset;
+        let anchor_jumps = &plan.jumps;
         let Some(bytes) = self.view.image().get(span.file.clone()) else {
             return self.scan_range_quick(
                 span.mapped.clone(),
@@ -707,10 +664,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_len,
-                anchor_offset,
-                anchor_jumps,
+                plan,
                 scratch,
             );
         };
@@ -722,10 +676,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_len,
-                anchor_offset,
-                anchor_jumps,
+                plan,
                 scratch,
             );
         };
@@ -736,10 +687,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_len,
-                anchor_offset,
-                anchor_jumps,
+                plan,
                 scratch,
             );
         };
@@ -751,10 +699,7 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
                 pat,
                 save,
                 linear_exec,
-                anchor,
-                anchor_len,
-                anchor_offset,
-                anchor_jumps,
+                plan,
                 scratch,
             );
         };
@@ -795,12 +740,13 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
         pat: &[Atom],
         save: &mut [Offset],
         linear_exec: bool,
-        anchor: &[u8; ANCHOR_MAX_LEN],
-        anchor_len: usize,
-        anchor_offset: u64,
-        anchor_jumps: &[u8; 256],
+        plan: &AnchorPlan,
         scratch: &mut ExecScratch,
     ) -> Option<Offset> {
+        let anchor = &plan.bytes;
+        let anchor_len = plan.len;
+        let anchor_offset = plan.offset;
+        let anchor_jumps = &plan.jumps;
         let prefix = &anchor[..anchor_len];
         let window = u64::try_from(anchor_len).ok()?;
         let start = start.checked_add(anchor_offset)?;
@@ -1485,10 +1431,7 @@ pub struct Matches<'a, 'p, B: BinaryView> {
     linear_exec: bool,
     range_index: usize,
     cursor: Option<Offset>,
-    anchor: [u8; ANCHOR_MAX_LEN],
-    anchor_len: usize,
-    anchor_offset: u64,
-    anchor_jumps: [u8; 256],
+    anchor: AnchorPlan,
     scratch: ExecScratch,
 }
 
@@ -1525,9 +1468,6 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
                 save,
                 self.linear_exec,
                 &self.anchor,
-                self.anchor_len,
-                self.anchor_offset,
-                &self.anchor_jumps,
                 &mut self.scratch,
             );
 
@@ -1588,15 +1528,17 @@ fn analyze_pattern(pat: &[Atom]) -> PatternPlan {
     let required_slots = save_len(pat);
     let linear_exec = is_linear_pattern(pat);
     let map = build_offset_map(pat);
-    let (anchor, anchor_len, anchor_offset) = select_anchor_from_map(&map);
-    let anchor_jumps = build_anchor_jumps(&anchor, anchor_len);
+    let (bytes, len, offset) = select_anchor_from_map(&map);
+    let jumps = build_anchor_jumps(&bytes, len);
     PatternPlan {
         required_slots,
         linear_exec,
-        anchor,
-        anchor_len,
-        anchor_offset,
-        anchor_jumps,
+        anchor: AnchorPlan {
+            bytes,
+            len,
+            offset,
+            jumps,
+        },
     }
 }
 

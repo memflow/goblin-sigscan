@@ -99,6 +99,9 @@ impl<'a> ElfFile<'a> {
             }
         }
 
+        // Sort by mapped start: the scanner's span lookups assume ascending spans.
+        code_spans.sort_by_key(|span| span.mapped.start);
+
         Ok(Self {
             bytes,
             elf,
