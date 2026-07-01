@@ -312,6 +312,10 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 
     /// Returns `true` only when the pattern has exactly one code match.
+    ///
+    /// This re-analyses `pat` (anchor selection, execution plan) on every call. For repeated
+    /// uniqueness scans of the same pattern, [`Self::prepare_pattern`] once and use
+    /// [`Self::finds_prepared`] / [`Self::finds_prepared_with`] to skip that per-call work.
     pub fn finds_code(&self, pat: &[Atom], save: &mut [Offset]) -> bool {
         let plan = analyze_pattern(pat);
         let required_slots = plan.required_slots;
@@ -1052,6 +1056,11 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     ) -> bool {
         let span_hint = scratch.current_span;
         scratch.reset_from_save(save);
+        // `work_save` is a field-split borrow of `scratch`: it holds `&mut scratch.work_save`
+        // while the loop below still touches `scratch.calls`/`save_log`/`stack` directly. This
+        // relies on Rust's disjoint-field borrow splitting, so those three must stay direct
+        // field accesses — routing any of them through a `&mut self` method would borrow all of
+        // `scratch` and break the borrow check.
         let work_save = &mut scratch.work_save;
         scratch.calls.clear();
         scratch.save_log.clear();
@@ -1472,7 +1481,18 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             );
 
             if let Some(cursor) = matched_at {
-                self.cursor = cursor.checked_add(1);
+                match cursor.checked_add(1) {
+                    Some(next) => self.cursor = Some(next),
+                    // Defensive guard for the `u64::MAX` boundary: advance to the next range
+                    // instead of leaving `cursor = None`, which would restart (and re-yield)
+                    // this span. Unreachable with consistent views (`mapped.len() ==
+                    // file.len()` caps any match offset at `u64::MAX - 1`); this mirrors the
+                    // finds path's clean termination for adversarial/synthetic views.
+                    None => {
+                        self.range_index += 1;
+                        self.cursor = None;
+                    }
+                }
                 return true;
             }
 
