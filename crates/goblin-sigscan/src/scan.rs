@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::pattern::{Atom, ParsePatError, save_len};
-use memchr::memchr_iter;
+use memchr::{memchr_iter, memmem};
 
 pub type Offset = u64;
 const MAX_BACKTRACK_STATES: usize = 1_000_000;
@@ -89,8 +89,18 @@ pub struct PreparedPattern {
 
 impl PreparedPattern {
     /// Builds a prepared pattern from parsed atoms.
+    ///
+    /// Without a view this selects the anchor with the static rarity heuristic. Preparing
+    /// through [`Scanner::prepare_pattern`] / [`Scanner::prepare_pattern_str`] instead also
+    /// tunes the anchor to the target binary by exact occurrence counts. The anchor is only a
+    /// candidate filter (execution verifies every match), so either way the pattern is correct
+    /// on any view — the tuned anchor is just faster on the view it was prepared against.
     pub fn from_atoms(atoms: Vec<Atom>) -> Self {
         let plan = analyze_pattern(&atoms);
+        Self::from_atoms_and_plan(atoms, plan)
+    }
+
+    fn from_atoms_and_plan(atoms: Vec<Atom>, plan: PatternPlan) -> Self {
         Self {
             atoms,
             required_slots: plan.required_slots,
@@ -345,8 +355,15 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     }
 
     /// Prepares reusable scanner metadata for a parsed pattern.
+    ///
+    /// Besides the static analysis, this anchors the pattern on its literal run with the
+    /// fewest actual occurrences in this view's code (exact `memmem` counts). The counting is
+    /// a one-off cost per prepared pattern — `O(code size)` per literal run — and only runs
+    /// when the pattern has at least two literal runs to choose between.
     pub fn prepare_pattern(&self, pat: &[Atom]) -> PreparedPattern {
-        PreparedPattern::from_atoms(pat.to_vec())
+        let mut plan = analyze_pattern(pat);
+        self.refine_anchor_by_count(pat, &mut plan);
+        PreparedPattern::from_atoms_and_plan(pat.to_vec(), plan)
     }
 
     /// Parses and prepares a pattern string for scanning.
@@ -355,7 +372,74 @@ impl<'a, B: BinaryView> Scanner<'a, B> {
     /// runtime text parsing and allocates atom storage on each call.
     pub fn prepare_pattern_str(&self, source: &str) -> Result<PreparedPattern, ParsePatError> {
         let atoms = crate::pattern::parse(source)?;
-        Ok(PreparedPattern::from_atoms(atoms))
+        let mut plan = analyze_pattern(&atoms);
+        self.refine_anchor_by_count(&atoms, &mut plan);
+        Ok(PreparedPattern::from_atoms_and_plan(atoms, plan))
+    }
+
+    /// Re-anchors `plan` on the candidate literal run with the fewest actual occurrences in
+    /// this view's code.
+    ///
+    /// The static heuristic can only guess byte rarity; counting is exact, so the executor
+    /// runs on the smallest candidate set. The anchor stays a pure necessary-condition filter
+    /// (execution verifies every candidate), so this can only change speed, never results.
+    /// Patterns with fewer than two literal runs are left as-is — there is nothing to choose
+    /// between, and the common single-run case must not pay the counting pass.
+    fn refine_anchor_by_count(&self, pat: &[Atom], plan: &mut PatternPlan) {
+        if plan.anchor.len == 0 {
+            return;
+        }
+        let map = build_offset_map(pat);
+        let candidates = anchor_candidates_from_map(&map);
+        if candidates.len() < 2 {
+            return;
+        }
+
+        let image = self.view.image();
+        let mut best: Option<(usize, &AnchorCandidate)> = None;
+        for candidate in &candidates {
+            let finder = memmem::Finder::new(&candidate.bytes[..candidate.len]);
+            let mut count = 0usize;
+            'spans: for span in self.view.code_spans() {
+                let Some(code) = image.get(span.file.clone()) else {
+                    continue;
+                };
+                for _ in finder.find_iter(code) {
+                    count += 1;
+                    // Already worse than the current best: this candidate can't win, so
+                    // stop counting it (keeps the pass bounded on common runs).
+                    if let Some((best_count, _)) = best
+                        && count > best_count
+                    {
+                        break 'spans;
+                    }
+                }
+            }
+            let better = match best {
+                None => true,
+                Some((best_count, best_candidate)) => {
+                    // Fewest occurrences wins; ties prefer the longer window (bigger
+                    // Boyer-Moore skips), then the higher static score.
+                    count < best_count
+                        || (count == best_count
+                            && (candidate.len > best_candidate.len
+                                || (candidate.len == best_candidate.len
+                                    && candidate.static_score > best_candidate.static_score)))
+                }
+            };
+            if better {
+                best = Some((count, candidate));
+            }
+        }
+
+        if let Some((_, candidate)) = best {
+            plan.anchor = AnchorPlan {
+                bytes: candidate.bytes,
+                len: candidate.len,
+                offset: candidate.offset,
+                jumps: build_anchor_jumps(&candidate.bytes, candidate.len),
+            };
+        }
     }
 
     /// Returns `true` only when a prepared pattern has exactly one code match.
@@ -1606,6 +1690,60 @@ fn select_anchor_from_map(map: &[Option<u8>]) -> ([u8; ANCHOR_MAX_LEN], usize, u
     (anchor, 0, 0)
 }
 
+/// A candidate anchor window for occurrence counting: one per maximal literal run.
+struct AnchorCandidate {
+    bytes: [u8; ANCHOR_MAX_LEN],
+    len: usize,
+    offset: u64,
+    static_score: u32,
+}
+
+/// Extracts one candidate anchor per maximal literal run in the offset map: the window
+/// (up to [`ANCHOR_MAX_LEN`] bytes) with the best [`anchor_window_score`] inside that run.
+/// Typical patterns yield one to three candidates.
+fn anchor_candidates_from_map(map: &[Option<u8>]) -> Vec<AnchorCandidate> {
+    let mut candidates = Vec::new();
+    let mut run_start = None::<usize>;
+    for index in 0..=map.len() {
+        let is_literal = index < map.len() && map[index].is_some();
+        match (run_start, is_literal) {
+            (None, true) => run_start = Some(index),
+            (Some(start), false) => {
+                candidates.push(best_window_in_run(map, start, index));
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    candidates
+}
+
+/// Picks the statically-best window (≤ [`ANCHOR_MAX_LEN`]) inside the all-literal run
+/// `map[start..end]`.
+fn best_window_in_run(map: &[Option<u8>], start: usize, end: usize) -> AnchorCandidate {
+    let win = (end - start).min(ANCHOR_MAX_LEN);
+    let mut best: Option<AnchorCandidate> = None;
+    for offset in start..=end - win {
+        let mut bytes = [0u8; ANCHOR_MAX_LEN];
+        for (k, slot) in map[offset..offset + win].iter().enumerate() {
+            bytes[k] = slot.expect("window lies inside an all-literal run");
+        }
+        let static_score = anchor_window_score(&bytes[..win]);
+        if best
+            .as_ref()
+            .is_none_or(|found| static_score > found.static_score)
+        {
+            best = Some(AnchorCandidate {
+                bytes,
+                len: win,
+                offset: offset as u64,
+                static_score,
+            });
+        }
+    }
+    best.expect("literal runs are non-empty")
+}
+
 /// Scores an anchor window by estimated filtering strength.
 ///
 /// Higher scores prefer windows with more distinct and less common bytes, and a
@@ -2012,6 +2150,105 @@ mod tests {
         let (_, len, offset) = select_anchor_from_map(&map);
         assert_eq!(len, 4);
         assert!(offset >= 2, "anchor must skip the leading wildcards");
+    }
+
+    #[test]
+    fn prepared_anchor_lands_on_the_rarest_run() {
+        // `48 8b 0d` floods the view while `15 7c` appears once. Static selection prefers
+        // the longer common run; prepare_pattern must re-anchor on the rare one by count.
+        let mut bytes = Vec::new();
+        for _ in 0..64 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x0d]);
+        }
+        bytes.extend_from_slice(&[0x15, 0x7c]);
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = crate::pattern::parse("? ? 48 8b 0d ? ? ? ? 15 7c").expect("pattern parses");
+
+        let static_prepared = PreparedPattern::from_atoms(pat.clone());
+        assert_eq!(
+            &static_prepared.anchor.bytes[..static_prepared.anchor.len],
+            &[0x48, 0x8b, 0x0d]
+        );
+        assert_eq!(static_prepared.anchor.offset, 2);
+
+        let prepared = scanner.prepare_pattern(&pat);
+        assert_eq!(&prepared.anchor.bytes[..prepared.anchor.len], &[0x15, 0x7c]);
+        assert_eq!(prepared.anchor.offset, 9);
+    }
+
+    #[test]
+    fn prepared_anchor_keeps_static_choice_for_single_run() {
+        // A single literal run offers nothing to choose between, so preparation must not
+        // change the static anchor (and must not pay the counting pass to find that out).
+        let view = TestView::new(&[0x00, 0x41, 0x42, 0x43, 0x00]);
+        let scanner = Scanner::new(&view);
+        let pat = crate::pattern::parse("41 42 43").expect("pattern parses");
+
+        let static_prepared = PreparedPattern::from_atoms(pat.clone());
+        let prepared = scanner.prepare_pattern(&pat);
+        assert_eq!(prepared.anchor.len, static_prepared.anchor.len);
+        assert_eq!(prepared.anchor.offset, static_prepared.anchor.offset);
+        assert_eq!(prepared.anchor.bytes, static_prepared.anchor.bytes);
+    }
+
+    #[test]
+    fn prepared_and_unprepared_find_the_same_matches() {
+        // One real match embedded in noise that floods the common run, so the two paths
+        // anchor on different runs but must yield identical matches.
+        let mut bytes = Vec::new();
+        for _ in 0..16 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x0d, 0x00]);
+        }
+        let match_offset = bytes.len() as Offset;
+        bytes.extend_from_slice(&[0x11, 0x22, 0x48, 0x8b, 0x0d, 1, 2, 3, 4, 0x15, 0x7c]);
+        for _ in 0..16 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x0d, 0x00]);
+        }
+        let view = TestView::new(&bytes);
+        let scanner = Scanner::new(&view);
+        let pat = crate::pattern::parse("? ? 48 8b 0d ? ? ? ? 15 7c").expect("pattern parses");
+
+        let prepared = scanner.prepare_pattern(&pat);
+        let static_prepared = PreparedPattern::from_atoms(pat.clone());
+        assert_ne!(
+            prepared.anchor.offset, static_prepared.anchor.offset,
+            "test setup: the two paths must anchor differently"
+        );
+
+        let mut save = vec![0u64; prepared.required_slots()];
+        let mut unprepared_offsets = Vec::new();
+        let mut matches = scanner.matches_code(&pat);
+        while matches.next(&mut save) {
+            unprepared_offsets.push(save[0]);
+        }
+        let mut prepared_offsets = Vec::new();
+        let mut matches = scanner.matches_prepared(&prepared);
+        while matches.next(&mut save) {
+            prepared_offsets.push(save[0]);
+        }
+
+        assert_eq!(unprepared_offsets, vec![match_offset]);
+        assert_eq!(prepared_offsets, unprepared_offsets);
+    }
+
+    #[test]
+    fn prepared_anchor_on_pe_fixture_picks_the_rare_run() {
+        // Pins the selection on real code: in this fixture `48 8b 0d` occurs hundreds of
+        // times while `15 7c` occurs a few dozen, so exact counting must anchor on `15 7c`
+        // (the static heuristic prefers the longer common run).
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("memflow_coredump.x86_64.dll");
+        let bytes = std::fs::read(path).expect("fixture should be readable");
+        let file = crate::pe64::PeFile::from_bytes(&bytes).expect("PE fixture should parse");
+        let scanner = file.scanner();
+
+        let prepared = scanner
+            .prepare_pattern_str("? ? 48 8b 0d ? ? ? ? 15 7c")
+            .expect("pattern parses");
+        assert_eq!(&prepared.anchor.bytes[..prepared.anchor.len], &[0x15, 0x7c]);
+        assert_eq!(prepared.anchor.offset, 9);
     }
 
     #[test]
