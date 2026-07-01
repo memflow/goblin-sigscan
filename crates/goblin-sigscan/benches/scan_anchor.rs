@@ -1,6 +1,8 @@
 //! Throughput benchmark for patterns whose strongest literal run is *not* the leading one
 //! (the weak-anchor / leading-wildcard case). Scans the real PE64 + ELF64 fixtures via
-//! `matches_code`, counting all matches, so it measures the full scan over the code.
+//! `matches_code` (per-call analysis) and `matches_prepared` (reused prepared metadata),
+//! counting all matches, so it measures the full scan over the code. A separate group times
+//! `prepare_pattern` itself so the one-off preparation cost stays visible.
 
 use std::{fs, path::PathBuf};
 
@@ -8,6 +10,7 @@ use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use goblin_sigscan::{
+    BinaryView, Scanner,
     elf::ElfFile,
     pattern::{self, Atom},
     pe64::PeFile,
@@ -54,15 +57,16 @@ fn fixture_bytes(name: &str) -> Vec<u8> {
     fs::read(fixture_path(name)).expect("fixture should be readable")
 }
 
-fn bench_pe64(c: &mut Criterion) {
-    let bytes = fixture_bytes(PE64_FIXTURE);
-    let file = PeFile::from_bytes(&bytes).expect("PE fixture should parse");
-    let scanner = file.scanner();
-    let patterns = parse_patterns();
-
-    let mut group = c.benchmark_group("scan_anchor_pe64");
-    group.throughput(Throughput::Bytes(bytes.len() as u64));
-    for pat in &patterns {
+fn bench_scans<B: BinaryView>(
+    c: &mut Criterion,
+    label: &str,
+    bytes_len: usize,
+    scanner: Scanner<'_, B>,
+    patterns: &[ParsedPattern],
+) {
+    let mut group = c.benchmark_group(format!("scan_anchor_{label}"));
+    group.throughput(Throughput::Bytes(bytes_len as u64));
+    for pat in patterns {
         group.bench_with_input(
             BenchmarkId::new("matches_code", pat.label),
             pat,
@@ -81,39 +85,50 @@ fn bench_pe64(c: &mut Criterion) {
                 );
             },
         );
+
+        // Prepared once outside the timing loop: steady-state reuse is the point of
+        // preparation, so this measures the pure scan with prepared metadata.
+        let prepared = scanner.prepare_pattern(&pat.atoms);
+        group.bench_with_input(
+            BenchmarkId::new("matches_prepared", pat.label),
+            &prepared,
+            |b, prepared| {
+                b.iter_batched_ref(
+                    || vec![0u64; pat.save_slots],
+                    |save| {
+                        let mut total = 0usize;
+                        let mut matches = scanner.matches_prepared(prepared);
+                        while matches.next(save) {
+                            total += 1;
+                        }
+                        black_box(total);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
     group.finish();
+
+    let mut group = c.benchmark_group(format!("prepare_pattern_{label}"));
+    for pat in patterns {
+        group.bench_with_input(BenchmarkId::new("prepare", pat.label), pat, |b, pat| {
+            b.iter(|| black_box(scanner.prepare_pattern(black_box(&pat.atoms))));
+        });
+    }
+    group.finish();
+}
+
+fn bench_pe64(c: &mut Criterion) {
+    let bytes = fixture_bytes(PE64_FIXTURE);
+    let file = PeFile::from_bytes(&bytes).expect("PE fixture should parse");
+    bench_scans(c, "pe64", bytes.len(), file.scanner(), &parse_patterns());
 }
 
 fn bench_elf64(c: &mut Criterion) {
     let bytes = fixture_bytes(ELF64_FIXTURE);
     let file = ElfFile::from_bytes(&bytes).expect("ELF fixture should parse");
-    let scanner = file.scanner();
-    let patterns = parse_patterns();
-
-    let mut group = c.benchmark_group("scan_anchor_elf64");
-    group.throughput(Throughput::Bytes(bytes.len() as u64));
-    for pat in &patterns {
-        group.bench_with_input(
-            BenchmarkId::new("matches_code", pat.label),
-            pat,
-            |b, pat| {
-                b.iter_batched_ref(
-                    || vec![0u64; pat.save_slots],
-                    |save| {
-                        let mut total = 0usize;
-                        let mut matches = scanner.matches_code(&pat.atoms);
-                        while matches.next(save) {
-                            total += 1;
-                        }
-                        black_box(total);
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
-    }
-    group.finish();
+    bench_scans(c, "elf64", bytes.len(), file.scanner(), &parse_patterns());
 }
 
 criterion_group!(benches, bench_pe64, bench_elf64);
