@@ -103,6 +103,11 @@ pub enum Atom {
     /// Captures the cursor RVA in the save slot.
     Save(u8),
     /// Skips a fixed number of bytes.
+    ///
+    /// `Skip(0)` is the pelite-style "skip one pointer width" convention: at scan time it
+    /// advances by the view's pointer size, so the distance is target-dependent (4 on
+    /// 32-bit, 8 on 64-bit) rather than zero. The parser never emits `Skip(0)`, so this
+    /// convention is only reachable when building atoms programmatically.
     Skip(u8),
     /// Skips a ranged number of bytes (inclusive).
     SkipRange(u16, u16),
@@ -140,8 +145,18 @@ pub enum Atom {
     /// Fails if the cursor does not equal the value in the given save slot.
     Check(u8),
     /// Branches to an alternate pattern arm on failure.
+    ///
+    /// # Alternation capture semantics
+    ///
+    /// A save slot written only inside an arm that is later abandoned is rolled back to its
+    /// pre-arm (initial) value, so the winning arm leaves such slots untouched. The save
+    /// array therefore does **not** identify which arm of an alternation matched. To tell the
+    /// arms apart, give each arm a distinct `Save` slot (a per-arm sentinel) and inspect which
+    /// one was written.
     Case(u16),
     /// Jumps past remaining alternate arms when current arm succeeds.
+    ///
+    /// See [`Atom::Case`] for how save slots behave across alternation arms.
     Break(u16),
     /// No-op instruction used to keep pattern control-flow offsets stable.
     Nop,
