@@ -1481,7 +1481,18 @@ impl<'a, 'p, B: BinaryView> Matches<'a, 'p, B> {
             );
 
             if let Some(cursor) = matched_at {
-                self.cursor = cursor.checked_add(1);
+                match cursor.checked_add(1) {
+                    Some(next) => self.cursor = Some(next),
+                    // Defensive guard for the `u64::MAX` boundary: advance to the next range
+                    // instead of leaving `cursor = None`, which would restart (and re-yield)
+                    // this span. Unreachable with consistent views (`mapped.len() ==
+                    // file.len()` caps any match offset at `u64::MAX - 1`); this mirrors the
+                    // finds path's clean termination for adversarial/synthetic views.
+                    None => {
+                        self.range_index += 1;
+                        self.cursor = None;
+                    }
+                }
                 return true;
             }
 
